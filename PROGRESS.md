@@ -56,22 +56,26 @@ festival anchors, ambiguous times all resolve right, after one prompt-tuning pas
 Defender false-positive that blocked the WinGet copy and a fresh manual download) — tunnel
 came up clean, so we used it for the first live call instead of waiting on Fly.io.
 
-**First real phone call placed 2026-08-25. Result: real progress, real findings, no
-successful conversation yet — exactly what a first live test is for.** Phone rang, Monish
-answered, heard only Twilio's trial-account interstitial (an interactive "press any key"
-IVR prompt, not the passive disclaimer I'd assumed), pressed a key, call ended before our
-`<Connect><Stream>` ever ran — no Telugu greeting played. Root cause confirmed via Twilio's
-own call API (status: completed, duration: 13s — genuinely connected, just to the wrong
-thing) and a raw WebSocket test proving the tunnel/server/`/media` route all work correctly
-in isolation. Along the way found and fixed a real, separate bug: `/call-status` was
-hitting 415 (Fastify had no form-urlencoded parser registered), fixed with
-`@fastify/formbody`.
+**Two real phone calls placed 2026-08-25, same result both times, root cause now confirmed
+via Twilio's own documentation.** Phone rang, Monish answered, heard Twilio's trial prompt,
+pressed a key, call ended — no Telugu greeting, `/media` never hit. Second call (after
+fixing the `/call-status` 415 bug) gave full status visibility: `initiated -> ringing ->
+in-progress -> completed`, ~13s connected both times, zero `/media` hits both times.
+**Definitive mechanism, confirmed via Twilio docs, not just inference:** `<Stream>` — the
+verb this whole architecture is built on — is explicitly blocked on trial accounts,
+replaced with a spoken "the Stream verb is not available on trial accounts" message. Our
+TwiML has nothing after `<Connect><Stream>`, so the call ends right after that message.
+Also found and fixed a real, separate bug along the way: `/call-status` was hitting 415
+(Fastify had no form-urlencoded parser), fixed with `@fastify/formbody`.
 
-**Correction to an earlier assumption** (see decisions table): the trial disclaimer isn't
-passive — it's interactive and blocks automation entirely, not just cosmetic. Upgrading is
-no longer deferrable to Phase 7; it blocks testing the core deliverable at all. Fly.io
-Dockerfile/fly.toml still ready and smoke-tested as the eventual production target, but the
-immediate next step is simpler: upgrade this Twilio account and retry on ngrok.
+**Two corrections to earlier assumptions, both recorded plainly in the decisions table**
+rather than silently revised: first that the trial disclaimer was passive (wrong — it's
+interactive), then that the block was "just" the disclaimer (wrong — Media Streams itself
+is hard-refused on trial, confirmed by the user directly questioning the first explanation
+and prompting a check of Twilio's actual docs). Upgrading is not deferrable to Phase 7 — it
+blocks testing the core deliverable entirely. Fly.io Dockerfile/fly.toml still ready as the
+eventual production target; the immediate next step is upgrading this Twilio account and
+retrying on the already-working ngrok tunnel.
 
 ## WHAT'S DONE
 
@@ -138,7 +142,8 @@ immediate next step is simpler: upgrade this Twilio account and retry on ngrok.
 | Custom orchestrator over Twilio Media Streams, not Vapi/Retell | We own the turn loop, so mid-call WhatsApp timing is provable and barge-in is tunable | Managed platforms make the 15-pt mid-call requirement a black box and every submission looks identical |
 | Twilio (US number) for telephony | Only Tier-1 provider permitting India outbound without an Indian-entity KYC. Twilio dropped India (+91) numbers Aug 2024 but calling *to* Indian mobiles from a non-India number is explicitly permitted with recipient consent — which the brief itself grants | Exotel/Ozonetel need GST + business KYC. Plivo viable, kept as documented fallback |
 | ~~Twilio **trial** account through Phase 6~~ — **superseded, see row below** | ~~Trial gives 75 free voice minutes, restricted only to verified numbers, every rehearsal targets our own verified number~~ | This assumed the trial disclaimer was a passive announcement. It isn't — see the correction below |
-| **Correction, live-tested 2026-08-25:** Twilio trial's disclaimer is an *interactive* IVR prompt ("press any key to accept"), not a passive message — it blocks our TwiML from ever executing until a human presses a key, then the call ends before `<Connect><Stream>` runs. First real call attempt: phone rang, Monish answered, heard only the English Twilio trial prompt, pressed a key, call ended — our Telugu greeting never played, `/media` never saw a connection. Upgrading is no longer a Phase-7-only decision — it blocks testing the core deliverable at all, not just the final call | The original assumption (verified above, wrong) was that the trial's only two restrictions were "verified numbers only" and "a passive disclaimer," neither blocking rehearsal. Live testing is what caught this — the assumption was reasonable but incomplete, and only a real call surfaced the gap | Would have kept assuming trial was fine for all rehearsals and only discovered this blocker later, closer to the real call, with less runway to react |
+| **Correction #2, confirmed via Twilio's own docs 2026-08-25:** `<Stream>` — Media Streams, the exact verb this entire architecture is built on — is explicitly, completely blocked on trial accounts. Twilio's docs: the verb is replaced with a spoken message, *"The Stream verb is not available on trial accounts."* Our TwiML has nothing after `<Connect><Stream>`, so that message plays and the call ends right after — exactly the "cut off after keypress" behavior observed twice, now with a documented mechanism instead of just repeated inference. Two live calls, identical timing (~13s connected, zero `/media` hits), both consistent with this. There is no code workaround; upgrading is the only path, and it blocks *any* Media-Streams-based testing, not just the disclaimer | Correction #1 (below) diagnosed the right *symptom* — trial blocks the call — but the wrong *mechanism* — an interactive disclaimer gating things, rather than the Stream verb being hard-refused outright. The user directly questioning "is this really an upgrade issue?" is what prompted checking Twilio's own docs instead of resting on the first (correct-shaped but imprecise) diagnosis | Live testing plus a user pushing back on an explanation that didn't quite fit is what surfaced the precise mechanism — worth recording that the first correction was directionally right but not fully accurate |
+| **Correction #1 (superseded by #2 above), live-tested 2026-08-25:** Twilio trial's disclaimer is an *interactive* IVR prompt ("press any key to accept"), not a passive message — it blocks our TwiML from ever executing until a human presses a key, then the call ends before `<Connect><Stream>` runs. First real call attempt: phone rang, Monish answered, heard only the English Twilio trial prompt, pressed a key, call ended — our Telugu greeting never played, `/media` never saw a connection. Upgrading is no longer a Phase-7-only decision — it blocks testing the core deliverable at all, not just the final call | The original assumption (verified above, wrong) was that the trial's only two restrictions were "verified numbers only" and "a passive disclaimer," neither blocking rehearsal. Live testing is what caught this — the assumption was reasonable but incomplete, and only a real call surfaced the gap | Would have kept assuming trial was fine for all rehearsals and only discovered this blocker later, closer to the real call, with less runway to react |
 | Rejected: physical GSM module / SIM800 or spare-Android-phone telephony bridge | Would mean discarding an already-working, typechecked Twilio WebSocket integration to hand-solder analog audio lines (module) or fight Android's OS-level restrictions on live call-audio access (phone), plus rebuilding ring/answer/hangup detection that Twilio gives for free via webhooks | Real zero-recurring-cost path, and legitimate — but the incremental saving is only the ₹1,700 already deferred to the last step, for genuine multi-day hardware/audio-debugging risk on a tight timeline. Decided with the user 2026-08-25 |
 | Soniox for ASR | 8.2% Telugu WER vs Google's 37%. True streaming, automatic language ID, mid-sentence Telugu↔English code-switching with zero config | Deepgram has no real Telugu. Whisper is not streaming |
 | Sarvam Bulbul v3 for TTS | Native Telugu with Tenglish code-switching, sub-250ms TTFB, Indian female voice (the brief says female lands better on outbound here), ₹30/10k chars | ElevenLabs is fine but not natively Tenglish; kept as fallback |
