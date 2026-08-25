@@ -25,9 +25,7 @@ if (to === env.PROSPECT_PHONE && !wantsProspect) {
 }
 
 const sessionId = randomUUID();
-console.log(`Dialling ${to} via ${env.TELEPHONY_PROVIDER}  (session ${sessionId})`);
+console.log(`Dialling ${to} via Exotel  (session ${sessionId})`);
 
 const call = await placeCall({ to, sessionId });
-// Twilio and Telnyx return different shapes (call.sid/call.status vs
-// call_control_id/call_leg_id) — dump the whole thing rather than assuming one.
 console.log("Call queued:", call);

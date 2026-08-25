@@ -11,6 +11,8 @@ build/
 auth_session/
 .baileys-auth/
 .whatsapp-qr.png
+assets/resume.pdf
+Vijay_71778.pdf
 recordings/
 *.tsbuildinfo
 coverage/

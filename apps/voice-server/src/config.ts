@@ -6,87 +6,51 @@ loadEnv({ path: resolve(process.cwd(), "../../.env") });
 loadEnv();
 
 // dotenv parses `KEY=` as an empty string, not undefined — so an unset
-// optional field like `ANTHROPIC_API_KEY=` would otherwise fail its own
-// `.min(5)` check instead of being treated as "not provided". Strip empty
-// values before validating so "KEY=" and a genuinely absent KEY behave
-// identically, matching what anyone editing .env would expect.
+// optional field would otherwise fail its own `.min(5)` check instead of
+// being treated as "not provided". Strip empty values before validating so
+// "KEY=" and a genuinely absent KEY behave identically.
 for (const key of Object.keys(process.env)) {
   if (process.env[key] === "") delete process.env[key];
 }
 
 /**
- * Fail loudly at boot rather than three seconds into a live call.
- * Anything the call path touches is required; anything only a later phase
- * touches is optional so Phase 1 can run before every account exists.
+ * Scoped to exactly what this server does now: Exotel (telephony, only for
+ * the callback re-dial — the primary call runs entirely inside Sarvam's
+ * Voice Agent), a single LLM (DeepSeek, used only by callbackResolver.ts to
+ * turn spoken time into a datetime), WhatsApp (Baileys), and the two files
+ * that go out in the post-call follow-up. Twilio, Telnyx, Soniox, our own
+ * Sarvam TTS streaming, and Anthropic were all real, working code earlier in
+ * this project — removed once Sarvam's managed agent took over the entire
+ * live call, since none of it does anything anymore. See PROGRESS.md for
+ * that history; it's not lost, just not live.
  */
 const schema = z.object({
-  /**
-   * Which telephony platform places the call. All three wired behind
-   * telephony/index.ts's factory. Exotel is the live default — both Twilio
-   * and Telnyx hit the same India-calling wall (Twilio's trial hard-blocks
-   * `<Stream>`, Telnyx gates India behind an account-verification tier
-   * neither the assignment's budget nor timeline could clear) — see
-   * telephony/exotel.ts for why a same-country Indian provider sidesteps
-   * that wall entirely.
-   */
-  TELEPHONY_PROVIDER: z.enum(["twilio", "telnyx", "exotel"]).default("exotel"),
-
-  TWILIO_ACCOUNT_SID: z.string().startsWith("AC").optional(),
-  TWILIO_AUTH_TOKEN: z.string().min(10).optional(),
-  TWILIO_PHONE_NUMBER: z.string().startsWith("+").optional(),
-
-  TELNYX_API_KEY: z.string().min(5).optional(),
-  TELNYX_PHONE_NUMBER: z.string().startsWith("+").optional(),
-  /** The Call Control Application ID — Telnyx calls this "connection_id" on the wire. */
-  TELNYX_CONNECTION_ID: z.string().optional(),
-
-  EXOTEL_SID: z.string().optional(),
-  EXOTEL_API_KEY: z.string().min(5).optional(),
-  EXOTEL_API_TOKEN: z.string().min(5).optional(),
+  EXOTEL_SID: z.string().min(1),
+  EXOTEL_API_KEY: z.string().min(5),
+  EXOTEL_API_TOKEN: z.string().min(5),
   /** The ExoPhone number, domestic format (e.g. "08047280713") — Exotel doesn't use E.164 here. */
-  EXOTEL_EXOPHONE: z.string().optional(),
-  /** App Bazaar flow ID holding the Voicebot Applet — the flow's WSS URL is configured once in the portal, not passed per-call. */
-  EXOTEL_APP_ID: z.string().optional(),
+  EXOTEL_EXOPHONE: z.string().min(1),
+  /** App Bazaar flow ID — its Voicebot Applet now points at Sarvam, not at this server, so dialing through it (re-dials included) reaches the same Sarvam agent as the original call. */
+  EXOTEL_APP_ID: z.string().min(1),
 
-  SARVAM_API_KEY: z.string().min(5),
-  SARVAM_VOICE: z.string().default("priya"),
-  SARVAM_MODEL: z.string().default("bulbul:v3"),
-
-  SONIOX_API_KEY: z.string().min(5).optional(),
-
-  /** Which model answers the phone. Both are wired behind the same LLMProvider interface — see brain/providers/. */
-  LLM_PROVIDER: z.enum(["anthropic", "deepseek"]).default("anthropic"),
-
-  ANTHROPIC_API_KEY: z.string().min(5).optional(),
-  LLM_MODEL: z.string().default("claude-opus-5"),
-
-  DEEPSEEK_API_KEY: z.string().min(5).optional(),
-  /** deepseek-chat / deepseek-reasoner retired 2026-07-24 — deepseek-v4-pro is the current flagship. */
+  DEEPSEEK_API_KEY: z.string().min(5),
+  /** deepseek-chat / deepseek-reasoner retired 2026-07-24 — this is the current flagship. Only used for the low-volume callback-time resolution call. */
   DEEPSEEK_MODEL: z.string().default("deepseek-v4-pro"),
 
   DATABASE_URL: z.string().optional(),
 
-  WHATSAPP_DRIVER: z.enum(["web-session", "cloud-api"]).default("web-session"),
-  WHATSAPP_ACCESS_TOKEN: z.string().optional(),
-  WHATSAPP_PHONE_NUMBER_ID: z.string().optional(),
-
   CANDIDATE_NAME: z.string().default(""),
   CANDIDATE_PHONE: z.string().default(""),
+  /** Sent with the post-call follow-up — see actions/followup.ts. Relative to this process's cwd (apps/voice-server), so these point back up to the project-root assets/ folder. */
+  RESUME_PATH: z.string().default("../../assets/resume.pdf"),
+  ARCHITECTURE_IMAGE_PATH: z.string().default("../../assets/architecture.png"),
 
   PROSPECT_PHONE: z.string().default("+918688664337"),
   TEST_PHONE: z.string().optional(),
 
   PORT: z.coerce.number().default(8080),
-  /** Public hostname Twilio dials back into. ngrok in dev, fly.dev in prod. */
-  PUBLIC_HOST: z.string().optional(),
   LOG_LEVEL: z.string().default("info"),
 });
-// Deliberately no cross-field "the selected provider's key must be set" check
-// here. Both LLM keys stay .optional() at the schema level so standalone
-// diagnostics (say.ts, and anything else that doesn't touch the brain) don't
-// import this module and get blocked by a provider they never call. That
-// check instead lives in brain/providers/index.ts, right next to the code
-// that actually needs the key — see assertProviderConfigured().
 
 const parsed = schema.safeParse(process.env);
 
@@ -101,27 +65,3 @@ if (!parsed.success) {
 }
 
 export const env = parsed.data;
-
-/**
- * wss:// URL for the active telephony provider's media stream — different
- * path per provider, all served by this same process. Exotel doesn't
- * actually call this: its Voicebot Applet's WSS URL is configured once,
- * statically, in the App Bazaar portal rather than passed per-call like
- * Twilio's TwiML or Telnyx's Dial params — kept here anyway so the mapping
- * of provider → path stays in one place for reference.
- */
-export function streamUrl(): string {
-  if (!env.PUBLIC_HOST) {
-    throw new Error(
-      `${env.TELEPHONY_PROVIDER} needs a public wss:// endpoint to stream to — PUBLIC_HOST is not set.`,
-    );
-  }
-  const host = env.PUBLIC_HOST.replace(/^https?:\/\//, "").replace(/\/$/, "");
-  const path =
-    env.TELEPHONY_PROVIDER === "telnyx"
-      ? "/telnyx/media"
-      : env.TELEPHONY_PROVIDER === "exotel"
-        ? "/exotel/media"
-        : "/media";
-  return `wss://${host}${path}`;
-}

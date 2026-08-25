@@ -80,25 +80,53 @@ function toJid(phoneNumber: string): string {
 }
 
 /**
- * Fire-and-forget from the caller's perspective — never blocks the call
- * that triggered it. Waits briefly for pairing to complete if the server
- * just started and the QR hasn't been scanned yet; gives up rather than
- * hanging the whole action pipeline on a WhatsApp session nobody's paired.
+ * Waits briefly for pairing to complete if the server just started and the
+ * QR hasn't been scanned yet; throws rather than hanging the caller forever
+ * on a WhatsApp session nobody's paired.
  */
-export async function sendWhatsApp(to: string, text: string, log: (obj: unknown, msg: string) => void): Promise<void> {
-  if (!sock) {
-    log({ to }, "WhatsApp not initialized — message not sent");
-    return;
-  }
+async function waitUntilReady(): Promise<void> {
+  if (!sock) throw new Error("WhatsApp not initialized");
+  await Promise.race([
+    readyPromise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error("WhatsApp not connected (timeout)")), 5000)),
+  ]);
+}
 
+/** Fire-and-forget from the caller's perspective — never blocks whatever triggered it. */
+export async function sendWhatsApp(to: string, text: string, log: (obj: unknown, msg: string) => void): Promise<void> {
   try {
-    await Promise.race([
-      readyPromise,
-      new Promise((_, reject) => setTimeout(() => reject(new Error("WhatsApp not connected (timeout)")), 5000)),
-    ]);
-    await sock.sendMessage(toJid(to), { text });
+    await waitUntilReady();
+    await sock!.sendMessage(toJid(to), { text });
     log({ to }, "WhatsApp sent");
   } catch (err) {
     log({ err, to }, "WhatsApp send failed");
+  }
+}
+
+/** Sends a local image file with a caption — used for the architecture diagram in the post-call follow-up. */
+export async function sendImage(to: string, localPath: string, caption: string, log: (obj: unknown, msg: string) => void): Promise<void> {
+  try {
+    await waitUntilReady();
+    await sock!.sendMessage(toJid(to), { image: { url: localPath }, caption });
+    log({ to, localPath }, "WhatsApp image sent");
+  } catch (err) {
+    log({ err, to, localPath }, "WhatsApp image send failed");
+  }
+}
+
+/** Sends a local file as a document — used for the resume in the post-call follow-up. */
+export async function sendDocument(
+  to: string,
+  localPath: string,
+  mimetype: string,
+  fileName: string,
+  log: (obj: unknown, msg: string) => void,
+): Promise<void> {
+  try {
+    await waitUntilReady();
+    await sock!.sendMessage(toJid(to), { document: { url: localPath }, mimetype, fileName });
+    log({ to, localPath }, "WhatsApp document sent");
+  } catch (err) {
+    log({ err, to, localPath }, "WhatsApp document send failed");
   }
 }
