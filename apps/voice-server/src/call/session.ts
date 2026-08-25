@@ -4,7 +4,7 @@ import { OutboundAudio } from "./media-stream.js";
 import { EnergyVad } from "./vad.js";
 import { mulawToPcm16 } from "./audio.js";
 import { SonioxStream } from "../providers/soniox.js";
-import { synthesize, type Language } from "../providers/sarvam.js";
+import { SarvamVoice, type Language } from "../providers/sarvam.js";
 import { Agent, type StopReason } from "../brain/agent.js";
 import { ConsoleActionSink } from "../brain/tools.js";
 import { createLiveProvider } from "../brain/providers/index.js";
@@ -37,6 +37,8 @@ export class CallSession {
   private readonly asr = new SonioxStream();
   private readonly vad = new EnergyVad();
   private readonly agent: Agent;
+  /** One WebSocket per call, opened once — see providers/sarvam.ts for why that matters. */
+  private readonly voice: SarvamVoice;
 
   private turnBuffer = "";
   private silenceTimer: NodeJS.Timeout | null = null;
@@ -52,6 +54,7 @@ export class CallSession {
     private readonly log: FastifyBaseLogger,
   ) {
     this.out = new OutboundAudio(socket, streamSid);
+    this.voice = new SarvamVoice(this.currentLanguage);
     this.agent = new Agent(
       createLiveProvider(),
       new ConsoleActionSink((obj, msg) => this.log.info({ sessionId, ...obj as object }, msg)),
@@ -79,6 +82,7 @@ export class CallSession {
     if (this.silenceTimer) clearTimeout(this.silenceTimer);
     this.asr.finish();
     this.asr.close();
+    this.voice.close();
   }
 
   private wireAsr(): void {
@@ -91,6 +95,7 @@ export class CallSession {
     this.asr.on("final", ({ text, language }) => {
       if (!text) return;
       this.currentLanguage = toSarvamLanguage(language, this.currentLanguage);
+      this.voice.setLanguage(this.currentLanguage);
       this.turnBuffer += (this.turnBuffer ? " " : "") + text;
 
       if (this.silenceTimer) clearTimeout(this.silenceTimer);
@@ -147,13 +152,19 @@ export class CallSession {
   }
 
   /**
-   * Synthesis is kicked off immediately so Sarvam's network round trip
-   * overlaps with whatever is currently playing; the playQueue chain only
-   * serializes the *playback* order, not the synthesis calls themselves —
-   * that overlap is most of the gap between sentences disappearing.
+   * `voice.speak()` is kicked off immediately so Sarvam's synthesis overlaps
+   * whatever is currently playing; the playQueue chain only serializes
+   * *playback* order, not synthesis. Synthesis itself is already serialized
+   * one level down, inside SarvamVoice, against its single persistent socket.
+   *
+   * Known gap, not fixed here: barge-in aborts the LLM request and clears
+   * already-playing audio, but doesn't cancel a sentence mid-synthesis on
+   * the Sarvam socket — a stray sentence can still land right after an
+   * interrupt. Revisit in Phase 6 hardening once this is stress-tested
+   * against real barge-in timing; the old REST-based synth had the same gap.
    */
   private speak(text: string): Promise<void> {
-    const synthPromise = synthesize(text, this.currentLanguage);
+    const synthPromise = this.voice.speak(text);
     this.playQueue = this.playQueue.then(async () => {
       if (this.closed) return;
       try {

@@ -2,6 +2,12 @@ import Fastify from "fastify";
 import websocket from "@fastify/websocket";
 import { env } from "./config.js";
 import { CallSession } from "./call/session.js";
+import { assertProviderConfigured } from "./brain/providers/index.js";
+
+// Fail loudly at boot, not three seconds into a live call — the actual point
+// of validating env in the first place. Standalone scripts (say.ts) skip
+// this on purpose; the real server never should.
+assertProviderConfigured();
 
 const app = Fastify({
   logger: { level: env.LOG_LEVEL, transport: { target: "pino-pretty" } },

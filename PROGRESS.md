@@ -21,8 +21,8 @@ Target: not 60. The best submission they receive.
 
 | # | Criterion | Pts | Status |
 |---|-----------|-----|--------|
-| 1 | Calls & holds a conversation | 25 | 🟡 code complete, untested live |
-| 2 | Language handling (TE/HI/EN + mixed) | 10 | 🟡 code complete, untested live |
+| 1 | Calls & holds a conversation | 25 | 🟡 TTS layer proven live (251ms TTFB); phone hasn't rung yet |
+| 2 | Language handling (TE/HI/EN + mixed) | 10 | 🟡 Telugu TTS audible and real; ASR/LLM code-complete, untested live |
 | 3 | Discovery quality | 10 | 🟡 tools + prompt written, untuned |
 | 4 | Intent classification from indirect answers | 15 | 🟡 LLM path written; deterministic scorer not started |
 | 5 | Mid-call WhatsApp action | 15 | ⬜ not started (Phase 4) |
@@ -34,10 +34,12 @@ Target: not 60. The best submission they receive.
 
 ## CURRENT STATE
 
-**Phase 2 code complete, typechecked clean. Blocked on live credentials for the real test.**
-Twilio signup in progress (Monish). Nothing in Phase 1/2 can be *proven* until a real call
-connects — code compiling is necessary, not sufficient. Per our own rule: a phase is not
-done until a live call to the test number confirms it.
+**First real audio out of the pipeline, measured, not simulated.** Twilio, Soniox, and
+Sarvam are live credentials now (Monish). `pnpm say` — the offline TTS diagnostic — ran
+against the actual streaming path and returned **251ms time-to-first-byte** (down from
+1693ms on the batch REST endpoint before the rewrite — see decisions table). DeepSeek key
+still missing, so the live-call path isn't testable yet; the TTS-only path is proven.
+Still no phone has actually rung — that's the next real milestone, not this one.
 
 ## WHAT'S DONE
 
@@ -64,6 +66,12 @@ done until a live call to the test number confirms it.
   implemented; swapping is one env var (`LLM_PROVIDER`), zero code changes elsewhere.
   Monish is running DeepSeek live (see decisions table for the reasoning-effort latency
   guard that makes this safe).
+- [x] Config decoupling fix: standalone diagnostics (say.ts) no longer blocked by an LLM
+  provider key they never touch — see decisions table.
+- [x] **Sarvam TTS rewritten from batch REST to a persistent streaming WebSocket**, using
+  the official `sarvamai` SDK. Measured, not estimated: 1693ms -> 251ms time-to-first-byte.
+  Requests mu-law @ 8kHz directly from Sarvam, eliminating our own codec conversion for the
+  TTS path entirely. First real live-credential test of the project — see decisions table.
 
 ## WHAT'S NEXT
 
@@ -98,6 +106,9 @@ done until a live call to the test number confirms it.
 | Adaptive thinking at `effort:"low"`, NOT `thinking:disabled` | On Opus 5, disabled thinking can emit a tool call as **plain text** — the call silently never runs and no error is raised. In a voice agent that means the WhatsApp never fires. Unacceptable risk on a 15-point requirement | `thinking:disabled` looked like the obvious latency win; it isn't |
 | Multi-provider brain — `LLMProvider` interface, Claude + DeepSeek both implemented | Monish wants to run DeepSeek V4 Pro personally (far cheaper per token than Claude). `agent.ts` owns only the turn loop/tool dispatch/barge-in-abort against a neutral `Turn[]` history; each provider translates that into its own wire format. Switching costs one env var, zero code | A single hard-coded Anthropic client would have meant a real rewrite to switch, not a config flag — the whole point of the abstraction |
 | DeepSeek live-call turns forced to `reasoning_effort:"low"`, never higher | The flagship (`deepseek-v4-pro`) at high/max reasoning is independently benchmarked at 12-30s to first token — a dead call, not a slow one. `deepseek.ts`'s constructor takes the effort level explicitly so the live-call factory can hard-code "low" regardless of any other config, the same defense-in-depth pattern as the Claude thinking-disabled guard above | Letting `reasoning_effort` be freely configurable risked exactly the failure mode the Claude guard exists to prevent, just from a different provider |
+| Provider API keys removed from config.ts's eager schema; moved to `assertProviderConfigured()` in brain/providers/index.ts, called once at server.ts boot | The global env schema was blocking `say.ts` — a pure TTS diagnostic — on a DeepSeek key it never uses, just because both modules imported the same monolithic config. Moved the check to point of use instead: standalone scripts stay unblocked, the real server still fails at boot, not mid-call | Telling the user to paste a fake key to unblock testing would have been a workaround for a real coupling bug, not a fix |
+| Empty-string env vars (`KEY=`) stripped before Zod validation | dotenv parses an unset `KEY=` as `""`, not `undefined` — Zod's `.optional()` only treats `undefined` as absent, so `ANTHROPIC_API_KEY=` failed its own `.min(5)` check even though it was correctly meant to be "not set". Caught live: this blocked the first real `pnpm say` run | A one-line default anyone editing `.env` would trip over otherwise |
+| Sarvam TTS: persistent streaming WebSocket per call, not one REST POST per sentence | First live test measured 1693ms time-to-first-byte on the batch endpoint — each sentence paid a fresh TLS handshake plus waited for the *entire* clip before any audio was usable. Rewrote against the official `sarvamai` SDK's streaming client, one socket opened per call and reused for every sentence. Re-measured: **251ms**, a 6.7x cut, matching Sarvam's own advertised streaming latency. Also requests `output_audio_codec:"mulaw"` + `speech_sample_rate:8000` directly, so Sarvam's output needs zero conversion before hitting Twilio | Would have shipped the 1.7s version if `pnpm say` hadn't been run against real credentials before wiring it into the live call path — validated by measurement, not assumption |
 | Mid-conversation system messages for live state | Opus 5 accepts `role:"system"` inside `messages[]`, so we inject elapsed time / intent score / "WhatsApp already sent" without invalidating the cached prefix | Rebuilding the system prompt each turn would cold-cache every turn |
 | Dual-path intent detection | A deterministic signal scorer runs in parallel with the LLM; whichever crosses the threshold first fires the WhatsApp | Sole reliance on an LLM tool call means one missed call = 15 points gone |
 | Fly.io `bom` (Mumbai) | Physically closest region to Indian carriers and to Sarvam. Every ms of RTT is scored under "latency kills the conversation" | Vercel can't hold long-lived WebSockets; US regions add ~200ms round trip |

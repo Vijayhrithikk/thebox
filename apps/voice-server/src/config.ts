@@ -5,6 +5,15 @@ import { resolve } from "node:path";
 loadEnv({ path: resolve(process.cwd(), "../../.env") });
 loadEnv();
 
+// dotenv parses `KEY=` as an empty string, not undefined — so an unset
+// optional field like `ANTHROPIC_API_KEY=` would otherwise fail its own
+// `.min(5)` check instead of being treated as "not provided". Strip empty
+// values before validating so "KEY=" and a genuinely absent KEY behave
+// identically, matching what anyone editing .env would expect.
+for (const key of Object.keys(process.env)) {
+  if (process.env[key] === "") delete process.env[key];
+}
+
 /**
  * Fail loudly at boot rather than three seconds into a live call.
  * Anything the call path touches is required; anything only a later phase
@@ -16,7 +25,7 @@ const schema = z.object({
   TWILIO_PHONE_NUMBER: z.string().startsWith("+"),
 
   SARVAM_API_KEY: z.string().min(5),
-  SARVAM_VOICE: z.string().default("anushka"),
+  SARVAM_VOICE: z.string().default("priya"),
   SARVAM_MODEL: z.string().default("bulbul:v3"),
 
   SONIOX_API_KEY: z.string().min(5).optional(),
@@ -47,22 +56,13 @@ const schema = z.object({
   /** Public hostname Twilio dials back into. ngrok in dev, fly.dev in prod. */
   PUBLIC_HOST: z.string().optional(),
   LOG_LEVEL: z.string().default("info"),
-}).superRefine((data, ctx) => {
-  if (data.LLM_PROVIDER === "anthropic" && !data.ANTHROPIC_API_KEY) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["ANTHROPIC_API_KEY"],
-      message: "required when LLM_PROVIDER=anthropic",
-    });
-  }
-  if (data.LLM_PROVIDER === "deepseek" && !data.DEEPSEEK_API_KEY) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["DEEPSEEK_API_KEY"],
-      message: "required when LLM_PROVIDER=deepseek",
-    });
-  }
 });
+// Deliberately no cross-field "the selected provider's key must be set" check
+// here. Both LLM keys stay .optional() at the schema level so standalone
+// diagnostics (say.ts, and anything else that doesn't touch the brain) don't
+// import this module and get blocked by a provider they never call. That
+// check instead lives in brain/providers/index.ts, right next to the code
+// that actually needs the key — see assertProviderConfigured().
 
 const parsed = schema.safeParse(process.env);
 

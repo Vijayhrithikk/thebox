@@ -31,6 +31,9 @@ importers:
       pino-pretty:
         specifier: ^13.0.0
         version: 13.1.3
+      sarvamai:
+        specifier: ^1.1.8
+        version: 1.1.8
       twilio:
         specifier: ^5.4.0
         version: 5.13.1
@@ -639,6 +642,10 @@ packages:
   safe-stable-stringify@2.5.0:
     resolution: {integrity: sha512-b3rppTKm9T+PsVCBEOUR46GWI7fdOs00VKZ1+9c1EWDaDMvjQc6tUwuFyIprgGgTcWoVHSKrU8H31ZHA2e0RHA==}
     engines: {node: '>=10'}
+
+  sarvamai@1.1.8:
+    resolution: {integrity: sha512-u5qhfTfTy2IIpyXwsH6cJPJcM0a8PUdo5ZRObxRKZflU8lpGTi+VKXMq3hHzO07/9bSqWD2Rrt07ElX3YurjjQ==}
+    engines: {node: '>=18.0.0'}
 
   scmp@2.1.0:
     resolution: {integrity: sha512-o/mRQGk9Rcer/jEEw/yw4mwo3EU/NvYvp577/Btqrym9Qy5/MdWGBqipbALgd2lrdWTJ5/gqDusxfnQBxOxT2Q==}
@@ -1291,6 +1298,13 @@ snapshots:
       ret: 0.5.0
 
   safe-stable-stringify@2.5.0: {}
+
+  sarvamai@1.1.8:
+    dependencies:
+      ws: 8.21.3
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
 
   scmp@2.1.0: {}
 

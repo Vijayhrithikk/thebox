@@ -1,69 +1,119 @@
+import { SarvamAIClient, type SarvamAI } from "sarvamai";
 import { env } from "../config.js";
-import { pcmFromWav, pcm16ToMulaw, toFrames } from "../call/audio.js";
+import { toFrames } from "../call/audio.js";
 
-const ENDPOINT = "https://api.sarvam.ai/text-to-speech";
+const client = new SarvamAIClient({ apiSubscriptionKey: env.SARVAM_API_KEY });
 
 export type Language = "te-IN" | "hi-IN" | "en-IN";
 
-export interface SynthesisResult {
-  /** Ready to write straight onto a Twilio media stream. */
+export interface SpokenSentence {
+  /** Ready to write straight onto a Twilio media stream — Sarvam is asked for mu-law @ 8kHz directly, so there's no codec conversion left to do. */
   frames: Buffer[];
-  /** Wall-clock ms from request to first byte — the number that decides if the call feels alive. */
+  /** Wall-clock ms from send to first audio byte — the number the batch REST endpoint measured at ~1.7s. */
   latencyMs: number;
-  /** Playback duration, so the session knows when it stops talking. */
   durationMs: number;
 }
 
+type Socket = Awaited<ReturnType<typeof client.textToSpeechStreaming.connect>>;
+type Message = SarvamAI.AudioOutput | SarvamAI.EventResponse | SarvamAI.ErrorResponse;
+
 /**
- * Sarvam Bulbul: native Telugu/Hindi/English with Tenglish and Hinglish
- * code-switching, and it will hand back 8 kHz directly — which means no
- * resampling stage between TTS and the phone line.
+ * One persistent Sarvam TTS WebSocket per call.
+ *
+ * The batch REST endpoint measured ~1.7s time-to-first-byte per sentence —
+ * every sentence pays a fresh TLS handshake and connection setup, on top of
+ * waiting for the *entire* clip before any audio is usable. Sarvam's own
+ * streaming docs put first-byte latency under 250ms, and that number is
+ * only real if the connection is opened once per call and reused — so
+ * that's the shape here: connect in the constructor, `speak()` for every
+ * sentence, `close()` when the call ends.
+ *
+ * Sentences are deliberately serialized against the socket (not fired
+ * concurrently) because the SDK's event wiring holds one message handler at
+ * a time, not a queue — installing a fresh handler per sentence only stays
+ * correct if the previous sentence has already resolved.
  */
-export async function synthesize(
-  text: string,
-  language: Language,
-  signal?: AbortSignal,
-): Promise<SynthesisResult> {
-  const started = performance.now();
+export class SarvamVoice {
+  private socket: Socket | null = null;
+  private readonly opening: Promise<Socket>;
+  private queue: Promise<unknown> = Promise.resolve();
+  private language: Language;
 
-  const body = {
-    text,
-    target_language_code: language,
-    speaker: env.SARVAM_VOICE,
-    model: env.SARVAM_MODEL,
-    // Ask for the phone line's native rate so nothing has to be resampled.
-    speech_sample_rate: 8000,
-    enable_preprocessing: true,
-    pace: 1.0,
-  };
-
-  const res = await fetch(ENDPOINT, {
-    method: "POST",
-    headers: {
-      "api-subscription-key": env.SARVAM_API_KEY,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-    signal,
-  });
-
-  if (!res.ok) {
-    const detail = await res.text().catch(() => "");
-    throw new Error(`Sarvam TTS ${res.status}: ${detail.slice(0, 400)}`);
+  constructor(initialLanguage: Language) {
+    this.language = initialLanguage;
+    this.opening = this.connect();
   }
 
-  const payload = (await res.json()) as { audios?: string[]; audio?: string };
-  const b64 = payload.audios?.[0] ?? payload.audio;
-  if (!b64) throw new Error("Sarvam returned no audio");
+  private async connect(): Promise<Socket> {
+    const socket = await client.textToSpeechStreaming.connect({
+      model: "bulbul:v3",
+      send_completion_event: "true",
+    });
+    // client.connect() only constructs the (reconnecting) WebSocket — it
+    // does not wait for the handshake to finish. configureConnection()
+    // asserts the socket is OPEN and throws otherwise, so this wait is load
+    // -bearing, not defensive.
+    await socket.waitForOpen();
+    this.configure(socket, this.language);
+    this.socket = socket;
+    return socket;
+  }
 
-  const pcm = pcmFromWav(Buffer.from(b64, "base64"));
-  const mulaw = pcm16ToMulaw(pcm);
-  const frames = toFrames(mulaw);
+  private configure(socket: Socket, language: Language): void {
+    socket.configureConnection({
+      language_code: language as SarvamAI.ConfigureConnection.Data.LanguageCode,
+      speaker: env.SARVAM_VOICE as SarvamAI.ConfigureConnection.Data.Speaker,
+      output_audio_codec: "mulaw",
+      speech_sample_rate: 8000,
+    });
+  }
 
-  return {
-    frames,
-    latencyMs: Math.round(performance.now() - started),
-    // One μ-law byte per sample at 8 kHz → 8 bytes per millisecond.
-    durationMs: Math.round(mulaw.length / 8),
-  };
+  /** Caller code-switched — Sarvam accepts a fresh config message at any point in the socket's lifetime. */
+  setLanguage(language: Language): void {
+    if (language === this.language) return;
+    this.language = language;
+    this.queue = this.queue.then(async () => {
+      const socket = await this.opening;
+      this.configure(socket, language);
+    });
+  }
+
+  /** Synthesizes one sentence; resolves once Sarvam signals generation is complete. */
+  speak(text: string): Promise<SpokenSentence> {
+    const task = this.queue.then(() => this.speakNow(text));
+    // A failed sentence shouldn't wedge every sentence after it.
+    this.queue = task.catch(() => undefined);
+    return task;
+  }
+
+  private async speakNow(text: string): Promise<SpokenSentence> {
+    const socket = await this.opening;
+    const startedAt = performance.now();
+    const chunks: Buffer[] = [];
+    let firstByteMs = 0;
+
+    return new Promise<SpokenSentence>((resolve, reject) => {
+      socket.on("message", (message: Message) => {
+        if (message.type === "audio") {
+          if (!firstByteMs) firstByteMs = Math.round(performance.now() - startedAt);
+          chunks.push(Buffer.from(message.data.audio, "base64"));
+        } else if (message.type === "event" && message.data.event_type === "final") {
+          const mulaw = Buffer.concat(chunks);
+          resolve({
+            frames: toFrames(mulaw),
+            latencyMs: firstByteMs || Math.round(performance.now() - startedAt),
+            durationMs: Math.round(mulaw.length / 8),
+          });
+        } else if (message.type === "error") {
+          reject(new Error(`Sarvam streaming TTS: ${message.data.message}`));
+        }
+      });
+      socket.convert(text);
+      socket.flush();
+    });
+  }
+
+  close(): void {
+    this.socket?.close();
+  }
 }
