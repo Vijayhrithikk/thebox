@@ -39,6 +39,9 @@ const schema = z.object({
 
   DATABASE_URL: z.string().optional(),
 
+  /** Shared secret checked against the X-Webhook-Secret header on all /webhooks/* routes — see server.ts's checkWebhookAuth. Optional so nothing breaks before it's set on both this server and Sarvam's tool config, but should be set in production. */
+  WEBHOOK_SECRET: z.string().optional(),
+
   CANDIDATE_NAME: z.string().default(""),
   CANDIDATE_PHONE: z.string().default(""),
   /** Sent with the post-call follow-up — see actions/followup.ts. Relative to this process's cwd (apps/voice-server), so these point back up to the project-root assets/ folder. */

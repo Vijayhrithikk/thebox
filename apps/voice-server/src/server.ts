@@ -40,11 +40,31 @@ const webhookLog = (obj: unknown, msg: string) => app.log.info(obj as object, ms
 /** For the console: recent events across all calls, newest first. */
 app.get("/events", async () => ({ events: getEvents() }));
 
+/**
+ * These four routes trigger real side effects (WhatsApp sends, a scheduled
+ * re-dial that costs real Exotel minutes) and were, until now, reachable by
+ * anyone who found the URL — no auth at all. WEBHOOK_SECRET is optional
+ * specifically so nothing breaks before it's configured on both ends, but
+ * it should be set in production: generate any random string, put it in
+ * this server's WEBHOOK_SECRET env var, and configure the same value as a
+ * header on all four tools in Sarvam's tool config (see the setup prompt).
+ * /health, /, and /events stay open — they're read-only and /  is the
+ * whole point of a demo console being shareable.
+ */
+function checkWebhookAuth(request: { headers: Record<string, unknown> }): boolean {
+  if (!env.WEBHOOK_SECRET) return true;
+  return request.headers["x-webhook-secret"] === env.WEBHOOK_SECRET;
+}
+
 // In-memory, per-process guard so a HOT verdict called more than once in the
 // same conversation (Sarvam's agent can call the tool again as confidence
 // increases) only sends one WhatsApp, keyed by whatever session identifier
 // Sarvam passes.
 const hotAlreadyFired = new Set<string>();
+// Same idea for call-ended: if Sarvam retries the on_end tool call (a
+// timeout, a network blip), this stops the follow-up composing and sending
+// twice — a real duplicate-message risk that had no guard until now.
+const callEndedAlreadyHandled = new Set<string>();
 
 function buildHotLeadMessage(evidence: string): string {
   const name = env.CANDIDATE_NAME || "our team";
@@ -57,6 +77,7 @@ function buildHotLeadMessage(evidence: string): string {
 }
 
 app.post("/webhooks/classify", async (request, reply) => {
+  if (!checkWebhookAuth(request)) return reply.code(401).send({ ok: false, error: "unauthorized" });
   const body = request.body as {
     classification?: "hot" | "warm" | "cold";
     evidence?: string;
@@ -78,12 +99,14 @@ app.post("/webhooks/classify", async (request, reply) => {
 });
 
 app.post("/webhooks/discovery", async (request, reply) => {
+  if (!checkWebhookAuth(request)) return reply.code(401).send({ ok: false, error: "unauthorized" });
   webhookLog(request.body as object, "[sarvam webhook] discovery");
   recordEvent({ type: "discovery", ...(request.body as object) });
   return reply.send({ ok: true });
 });
 
 app.post("/webhooks/callback", async (request, reply) => {
+  if (!checkWebhookAuth(request)) return reply.code(401).send({ ok: false, error: "unauthorized" });
   const body = request.body as { spoken_time?: string; caller_number?: string };
   webhookLog(body, "[sarvam webhook] callback requested");
   recordEvent({ type: "callback", ...body });
@@ -107,8 +130,10 @@ app.post("/webhooks/callback", async (request, reply) => {
  * data is actually available.
  */
 app.post("/webhooks/call-ended", async (request, reply) => {
+  if (!checkWebhookAuth(request)) return reply.code(401).send({ ok: false, error: "unauthorized" });
   const body = request.body as {
     caller_number?: string;
+    session_id?: string;
     classification?: CallOutcome["classification"];
     call_summary?: string;
     budget?: string;
@@ -126,6 +151,13 @@ app.post("/webhooks/call-ended", async (request, reply) => {
     webhookLog(body, "call ended with no caller_number — cannot send follow-up");
     return reply.send({ ok: true });
   }
+
+  const dedupeKey = body.session_id ?? body.caller_number;
+  if (callEndedAlreadyHandled.has(dedupeKey)) {
+    webhookLog(body, "call-ended already handled for this call — skipping duplicate follow-up");
+    return reply.send({ ok: true });
+  }
+  callEndedAlreadyHandled.add(dedupeKey);
 
   const outcome: CallOutcome = {
     callerNumber: body.caller_number,
