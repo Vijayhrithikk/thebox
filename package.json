@@ -1,0 +1,16 @@
+{
+  "name": "elevatebox-voice",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Autonomous outbound AI voice agent: calls, sells, qualifies, and acts mid-call in Telugu, Hindi and English.",
+  "workspaces": ["apps/*"],
+  "scripts": {
+    "dev": "pnpm --filter voice-server dev",
+    "dev:console": "pnpm --filter console dev",
+    "build": "pnpm -r build",
+    "call": "pnpm --filter voice-server call",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "engines": { "node": ">=22" },
+  "packageManager": "pnpm@10.18.2"
+}

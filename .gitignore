@@ -1,0 +1,14 @@
+node_modules/
+dist/
+build/
+.next/
+.env
+.env.local
+.env.*.local
+*.log
+.DS_Store
+.fly/
+auth_session/
+recordings/
+*.tsbuildinfo
+coverage/
