@@ -12,3 +12,5 @@ auth_session/
 recordings/
 *.tsbuildinfo
 coverage/
+.tools/
+*.pid.txt

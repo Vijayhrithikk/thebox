@@ -88,14 +88,21 @@ is reserved for the post-call WhatsApp follow-up, where nobody's waiting on the 
 2. Create a project, region **Singapore** (closest to Mumbai they offer)
 3. Copy the pooled connection string → `DATABASE_URL`
 
-## 6. Fly.io — hosting the voice server
+## 6. Fly.io — hosting the voice server ⛔ CRITICAL PATH (this one)
 
-1. Sign up at **https://fly.io** and add a card
-2. Install the CLI (run this in PowerShell):
-   ```powershell
-   iwr https://fly.io/install.ps1 -useb | iex
-   ```
-3. `fly auth login`
+**Real cost, not deferred like Twilio.** Fly.io dropped its card-free tier in 2024 — new
+signups get a 2-hour/7-day trial, then it's pay-as-you-go. The tiny always-on instance this
+needs (`shared-cpu-1x`, 512MB, one machine, Mumbai region) runs a few dollars a month —
+small, but real and ongoing, unlike Twilio's one-time deferred upgrade. This is why we tried
+ngrok first (free dev tunnel) — it hit a Windows Defender false-positive blocking the
+binary, so we're on the real path instead. CLI is already installed (`C:\Users\hi\.fly\bin\`).
+
+1. Sign up at **https://fly.io/app/sign-up** and add a card
+2. Run `flyctl auth login` (opens your browser) — I can run this once you've signed up, or
+   you can run it yourself
+3. Tell me once you're authenticated and I'll run `fly launch` + `fly deploy` from the repo
+   root against `apps/voice-server/fly.toml` — Dockerfile and fly.toml are already written
+   and the build has been smoke-tested locally (compiles, boots, passes its health check)
 
 We deploy to the **Mumbai (`bom`)** region — closest to Indian carriers and to Sarvam.
 

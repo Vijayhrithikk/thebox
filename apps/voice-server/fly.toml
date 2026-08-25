@@ -1,0 +1,33 @@
+# Deploy from the repo root (pnpm workspace needs the root lockfile as build
+# context), pointing explicitly at this file and the Dockerfile next to it:
+#
+#   fly launch --config apps/voice-server/fly.toml --dockerfile apps/voice-server/Dockerfile --no-deploy
+#   fly deploy --config apps/voice-server/fly.toml --dockerfile apps/voice-server/Dockerfile
+#
+# app name below is a placeholder — `fly launch` will prompt to change it if
+# taken; update this file to match whatever name actually gets created.
+app = "elevatebox-voice"
+primary_region = "bom" # Mumbai — closest region to Indian carriers and to Sarvam
+
+[build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # A cold-started machine adds real latency right when a call connects —
+  # unacceptable for a voice agent scored on turn latency. Keep one warm.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

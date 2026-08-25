@@ -49,7 +49,17 @@ across four runs. Also found the flagship (`deepseek-v4-pro`) is ~5x slower than
 tool calls — so the live path is now hard-coded to flash regardless of `DEEPSEEK_MODEL`,
 with the flagship reserved for the offline post-call composition where its slowness
 genuinely doesn't matter. TTS layer: `pnpm say` still measures 251ms time-to-first-byte.
-**No phone has rung yet — that's still the next real milestone.**
+Callback scheduling (`pnpm schedule`) also live-tested and correct — relative dates,
+festival anchors, ambiguous times all resolve right, after one prompt-tuning pass.
+
+**Deployment: pivoted from ngrok to Fly.io Mumbai.** Attempted ngrok as the fast free dev
+tunnel; its binary got flagged by Windows Defender as a virus (both the pre-installed copy
+and a fresh official download) — likely a false positive, but not something to bypass
+without asking. User chose to go straight to the real production path instead. Dockerfile
+and fly.toml are written and the build is smoke-tested locally (compiles, boots, passes
+/health) — blocked only on Monish completing Fly.io signup (requires a card; Fly dropped
+its free tier in 2024) and CLI auth. **No phone has rung yet — that's still the next real
+milestone**, and it's now one deployment away.
 
 ## WHAT'S DONE
 
@@ -85,10 +95,13 @@ genuinely doesn't matter. TTS layer: `pnpm say` still measures 251ms time-to-fir
 
 ## WHAT'S NEXT
 
-1. Stand up an ngrok tunnel (dev-only, free) so Twilio has a public wss:// endpoint to
-   stream to -> first-ever live `pnpm call` to TEST_PHONE. This is the real milestone:
-   TTS and brain are separately proven over text/audio, but nothing has confirmed the
-   full ASR -> brain -> TTS loop holds up on an actual phone line yet.
+1. Monish signs up for Fly.io (card required — see decisions table) and authenticates the
+   CLI (`flyctl auth login`) -> `fly launch` + `fly deploy` from repo root against
+   `apps/voice-server/fly.toml` (Dockerfile + fly.toml already written, build already
+   smoke-tested: compiles, boots, passes /health) -> first-ever live `pnpm call` to
+   TEST_PHONE. This is the real milestone: TTS and brain are separately proven over
+   text/audio, but nothing has confirmed the full ASR -> brain -> TTS loop holds up on an
+   actual phone line yet.
 2. Phase 3: build the deterministic signal scorer as the second, non-LLM path to
    Hot/Warm/Cold (the LLM-only extraction path already works — this is the redundancy
    the plan calls for so the 15-pt mid-call requirement can't fail on one missed call)
@@ -99,7 +112,8 @@ genuinely doesn't matter. TTS layer: `pnpm say` still measures 251ms time-to-fir
 
 ## OPEN BLOCKERS
 
-- ⛔ No phone has actually rung yet — needs a public endpoint (ngrok, in progress)
+- ⛔ No phone has actually rung yet — needs Fly.io deployed (Dockerfile/fly.toml ready,
+  blocked on Monish's Fly.io signup + card, and CLI auth)
 - ⛔ DATABASE_URL still a placeholder — needed for Phase 4 callback persistence, not before
 - ⛔ Resume PDF still needed
 - ⛔ Twilio account still on trial (by design — see decisions table) — fine until Phase 7
@@ -126,6 +140,8 @@ genuinely doesn't matter. TTS layer: `pnpm say` still measures 251ms time-to-fir
 | Live conversational turn never sends tools; classify/discovery/callback moved to a parallel `signalExtractor.ts` side-channel | Live-measured: the moment the live turn included tool schemas, DeepSeek produced a silent tool-only response with zero spoken text every time, forcing a second sequential API round trip before any audio could start — 6.4s (flagship) and 3.6s (flash) to first sentence, both past the brief's "three seconds and the conversation is dead" bar. A prompt instruction telling it to speak *and* call tools together had zero measured effect — this is how the API's tool-calling shape behaves, not a promptable preference. Splitting extraction into its own concurrent, never-awaited call cut first-sentence latency to ~2-3s, consistent across four runs, while classification/discovery still land correctly (verified: budget/timeline/business extracted, correct hot/warm/cold with real evidence quotes) | Tried the cheap fix first (a prompt instruction) and measured that it didn't work before reaching for the architectural one — this is also the exact "deterministic path runs in parallel with the LLM" design the plan already committed to for intent classification; live testing just proved it wasn't optional or Phase-3-only |
 | DeepSeek live path hard-coded to `deepseek-v4-flash`, never `DEEPSEEK_MODEL`; flagship (`deepseek-v4-pro`) reserved for `createDeepReasoningProvider()` | Even with tools stripped from the live turn, the flagship measured ~10s to first token on a plain conversational reply — roughly 5x flash on the identical prompt — and showed weaker JSON-schema adherence on tool calls in the extractor (invented its own key names instead of following the declared schema). Flash is fast enough to hold a conversation; the flagship's quality is real but only usable where nobody's waiting on the line | Matches what "flagship" was actually asked for: use it, but only where its slowness is invisible — the post-call WhatsApp follow-up (Phase 4), not the live call |
 | Callback resolution via a single-tool LLM call (`callbackResolver.ts`), not a date-parsing library | "After Diwali" needs calendar knowledge no date library has, and open-ended Indian-English phrasing ("next Monday around 6", "sometime, I'll let you know") doesn't fit a fixed grammar. Live-tested: correctly computed "next Monday" from the actual current date, resolved "around 6" to an approximate evening time, and correctly distinguished a real-but-vague anchor ("after Diwali") from a genuinely unusable one ("sometime") — after one prompt-tuning pass caught the model being too conservative and declining to resolve the Diwali case at all on the first try | A hand-rolled parser would need to encode Indian festival dates and open-ended phrasing rules by hand, and would still fail on phrasing nobody thought to test for |
+| Fly.io Mumbai deployment instead of an ngrok dev tunnel | Attempted ngrok first (free, fastest path to a public wss:// endpoint). Its binary — both the pre-installed WinGet copy trying to self-update, and a fresh official download — got flagged and blocked by Windows Defender as a virus. Very likely a false positive, but silently bypassing antivirus on the user's machine isn't a call to make unilaterally; asked, and the user chose to skip it rather than touch Defender settings. Fly.io was always the real production target anyway (Mumbai region, closest to Indian carriers and Sarvam) — this just means we build it now instead of in Phase 6/7 | Fly.io dropped its card-free tier in 2024 — this is real, small, ongoing cost (a few $/month for one always-on shared-cpu-1x instance), not deferred like Twilio's one-time upgrade. Flagged clearly to the user given how much of this session was about avoiding upfront spend — this one genuinely can't be avoided if we need a live endpoint |
+| Fly deployment kept `min_machines_running = 1`, `auto_stop_machines = "off"` | A cold-started machine adds real latency right when a call connects — directly hostile to the turn-latency budget we just spent this whole session cutting from 6-10s to 2-3s. Keeping one instance always warm is a small cost for guaranteeing the connection is live and fast the instant Twilio dials in | Fly's default auto-stop-on-idle is the cheaper choice for most apps, but wrong for a voice agent scored on responsiveness |
 | Mid-conversation system messages for live state | Opus 5 accepts `role:"system"` inside `messages[]`, so we inject elapsed time / intent score / "WhatsApp already sent" without invalidating the cached prefix | Rebuilding the system prompt each turn would cold-cache every turn |
 | Dual-path intent detection | A deterministic signal scorer runs in parallel with the LLM; whichever crosses the threshold first fires the WhatsApp | Sole reliance on an LLM tool call means one missed call = 15 points gone |
 | Fly.io `bom` (Mumbai) | Physically closest region to Indian carriers and to Sarvam. Every ms of RTT is scored under "latency kills the conversation" | Vercel can't hold long-lived WebSockets; US regions add ~200ms round trip |
