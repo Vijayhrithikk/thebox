@@ -4,8 +4,10 @@ import { EnergyVad } from "./vad.js";
 import { SonioxStream } from "../providers/soniox.js";
 import { SarvamVoice, type Language } from "../providers/sarvam.js";
 import { Agent, type StopReason } from "../brain/agent.js";
-import { ConsoleActionSink, type ActionSink } from "../brain/tools.js";
+import { dedupeHotClassification, type ActionSink } from "../brain/tools.js";
+import { LiveActionSink } from "../brain/liveActionSink.js";
 import { extractSignals } from "../brain/signalExtractor.js";
+import { scoreUtterance } from "../brain/signalScorer.js";
 import { createLiveProvider, type LLMProvider } from "../brain/providers/index.js";
 
 /** Soniox's 2-letter codes → Sarvam's locale codes. Unknown stays on whatever we were already speaking. */
@@ -24,6 +26,17 @@ function toSarvamLanguage(code: string | undefined, fallback: Language): Languag
 
 /** No new final tokens for this long ⇒ treat it as the end of the caller's turn. */
 const SILENCE_TURN_END_MS = 700;
+
+/**
+ * How long to wait, after WE finish speaking, before assuming the caller
+ * has gone quiet rather than just thinking. First strike gets a spoken
+ * check-in; a second strike with still nothing ends the call politely
+ * instead of sitting connected in dead air indefinitely — the brief is
+ * explicit that dead air is the one thing never acceptable, and an
+ * abandoned or dropped call staying "live" burns real telephony minutes
+ * for no reason.
+ */
+const CALLER_SILENCE_MS = 10_000;
 
 /**
  * One live phone call, start to finish. Owns the whole ASR → brain → TTS
@@ -48,6 +61,10 @@ export class CallSession {
   private playQueue: Promise<void> = Promise.resolve();
   private closed = false;
 
+  /** Separate from `silenceTimer` above — that one detects end-of-caller-turn (700ms); this one detects the caller going quiet for the whole call. */
+  private callerSilenceTimer: NodeJS.Timeout | null = null;
+  private silenceStrikes = 0;
+
   constructor(
     private readonly out: AudioSink,
     public readonly sessionId: string,
@@ -56,7 +73,11 @@ export class CallSession {
     this.voice = new SarvamVoice(this.currentLanguage, out.codec);
     this.agent = new Agent(createLiveProvider());
     this.extractionProvider = createLiveProvider();
-    this.sink = new ConsoleActionSink((obj, msg) => this.log.info({ sessionId, ...obj as object }, msg));
+    this.sink = dedupeHotClassification(
+      new LiveActionSink(sessionId, this.extractionProvider, (obj, msg) =>
+        this.log.info({ sessionId, ...obj as object }, msg),
+      ),
+    );
     this.wireAsr();
     void this.greet();
   }
@@ -75,6 +96,7 @@ export class CallSession {
         void this.speak(sentence);
       });
       this.log.info({ sessionId: this.sessionId, stopReason }, "greeting sent");
+      void this.playQueue.then(() => this.armSilenceWatch());
     } catch (err) {
       this.log.error({ err, sessionId: this.sessionId }, "greeting failed");
     } finally {
@@ -103,20 +125,59 @@ export class CallSession {
   close(): void {
     this.closed = true;
     if (this.silenceTimer) clearTimeout(this.silenceTimer);
+    this.clearSilenceWatch();
     this.asr.finish();
     this.asr.close();
     this.voice.close();
   }
 
+  /** Restarts the "has the caller gone quiet" watch — called after every turn we finish speaking. */
+  private armSilenceWatch(): void {
+    if (this.closed) return;
+    if (this.callerSilenceTimer) clearTimeout(this.callerSilenceTimer);
+    this.callerSilenceTimer = setTimeout(() => this.onCallerSilence(), CALLER_SILENCE_MS);
+  }
+
+  /** Any sign of caller speech (even a partial) cancels the watch — see wireAsr(). */
+  private clearSilenceWatch(): void {
+    this.silenceStrikes = 0;
+    if (this.callerSilenceTimer) {
+      clearTimeout(this.callerSilenceTimer);
+      this.callerSilenceTimer = null;
+    }
+  }
+
+  private onCallerSilence(): void {
+    if (this.closed || this.agentBusy) return;
+    this.silenceStrikes++;
+
+    if (this.silenceStrikes === 1) {
+      this.log.info({ sessionId: this.sessionId }, "caller silent — checking in");
+      void this.speak(
+        this.currentLanguage === "te-IN" ? "హలో? మీరు అక్కడ ఉన్నారా?" : "Hello? Are you still there?",
+      );
+      this.armSilenceWatch();
+    } else {
+      this.log.info({ sessionId: this.sessionId }, "caller silent after check-in — ending call");
+      void this.speak(
+        this.currentLanguage === "te-IN"
+          ? "సరే, తర్వాత మాట్లాడదాం. ధన్యవాదాలు!"
+          : "Alright, I'll let you go for now — thank you!",
+      ).finally(() => this.close());
+    }
+  }
+
   private wireAsr(): void {
     this.asr.on("partial", (text: string) => {
-      if (text.trim().length > 2 && this.out.isSpeaking) {
-        this.bargeIn("asr-partial");
+      if (text.trim().length > 2) {
+        this.clearSilenceWatch();
+        if (this.out.isSpeaking) this.bargeIn("asr-partial");
       }
     });
 
     this.asr.on("final", ({ text, language }) => {
       if (!text) return;
+      this.clearSilenceWatch();
       this.currentLanguage = toSarvamLanguage(language, this.currentLanguage);
       this.voice.setLanguage(this.currentLanguage);
       this.turnBuffer += (this.turnBuffer ? " " : "") + text;
@@ -152,6 +213,13 @@ export class CallSession {
       this.log.error({ err, sessionId: this.sessionId, utterance }, "signal extraction failed");
     });
 
+    // Second, non-LLM path to the same classification — synchronous, zero
+    // latency cost, redundant on purpose. See signalScorer.ts and
+    // dedupeHotClassification() for why two paths calling onClassify("hot")
+    // don't produce two mid-call actions.
+    const deterministic = scoreUtterance(utterance);
+    if (deterministic) this.sink.onClassify(deterministic);
+
     let stopReason: StopReason;
     try {
       stopReason = await this.agent.respond(utterance, (sentence) => {
@@ -178,6 +246,8 @@ export class CallSession {
           : "Sorry, could you say that again?",
       );
     }
+
+    void this.playQueue.then(() => this.armSilenceWatch());
   }
 
   /**

@@ -65,11 +65,29 @@ export class SarvamVoice {
   }
 
   private configure(socket: Socket, language: Language): void {
+    // Wire format ({type:"config", data:{...}}), not the flat-params
+    // overload — the flat overload's type is missing `temperature` even
+    // though bulbul:v3 documents supporting it, so this is the only typed
+    // path to set it.
     socket.configureConnection({
-      language_code: language as SarvamAI.ConfigureConnection.Data.LanguageCode,
-      speaker: env.SARVAM_VOICE as SarvamAI.ConfigureConnection.Data.Speaker,
-      output_audio_codec: this.codec,
-      speech_sample_rate: 8000,
+      type: "config",
+      data: {
+        language_code: language as SarvamAI.ConfigureConnection.Data.LanguageCode,
+        speaker: env.SARVAM_VOICE as SarvamAI.ConfigureConnection.Data.Speaker,
+        output_audio_codec: this.codec,
+        speech_sample_rate: 8000,
+        // bulbul:v3 has no pitch/loudness control, but pace and temperature
+        // are real levers against the "robotic" feedback from the first
+        // live call. Default pace (1.0) reads as flat/rushed on a phone
+        // line; slightly under 1 gives it room to sound like someone
+        // actually talking, not reciting. Default temperature (0.6) is
+        // tuned for clarity over expressiveness — nudging it up trades a
+        // little consistency for natural-sounding prosodic variation. Both
+        // are a starting point, not a final number — the next thing to tune
+        // by ear against a real call.
+        pace: 0.92,
+        temperature: 0.75,
+      },
     });
   }
 

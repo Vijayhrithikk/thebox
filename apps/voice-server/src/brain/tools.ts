@@ -79,6 +79,8 @@ export const toolDefinitions: ToolSpec[] = [
 export interface ClassifyInput {
   classification: "hot" | "warm" | "cold";
   evidence: string;
+  /** Which path produced this — the LLM extractor, or signalScorer.ts's deterministic pattern match. Set at the call site, not by the model. */
+  source?: "llm" | "deterministic";
 }
 export interface NoteDiscoveryInput {
   slot: "budget" | "business" | "product_count" | "timeline" | "features";
@@ -103,7 +105,7 @@ export class ConsoleActionSink implements ActionSink {
   constructor(private readonly log: (obj: unknown, msg: string) => void) {}
 
   onClassify(input: ClassifyInput): void {
-    this.log(input, `[classify] ${input.classification}`);
+    this.log(input, `[classify:${input.source ?? "llm"}] ${input.classification}`);
   }
   onDiscovery(input: NoteDiscoveryInput): void {
     this.log(input, `[discovery] ${input.slot}`);
@@ -113,11 +115,34 @@ export class ConsoleActionSink implements ActionSink {
   }
 }
 
+/**
+ * Wraps any ActionSink so the first HOT classification from *either* path
+ * (LLM extractor or signalScorer.ts's deterministic match) is the only one
+ * that reaches the real sink — the mid-call action (Phase 4's WhatsApp send)
+ * fires once per call, not once per redundant path. Non-hot classifications
+ * and every other action type pass through untouched; this only guards the
+ * one action that must never double-fire.
+ */
+export function dedupeHotClassification(sink: ActionSink): ActionSink {
+  let hotFired = false;
+  return {
+    onClassify(input: ClassifyInput): void {
+      if (input.classification === "hot") {
+        if (hotFired) return;
+        hotFired = true;
+      }
+      sink.onClassify(input);
+    },
+    onDiscovery: (input) => sink.onDiscovery(input),
+    onCallbackRequested: (input) => sink.onCallbackRequested(input),
+  };
+}
+
 /** Dispatches a completed tool call to the sink and returns the ack text for the tool result. */
 export function handleToolCall(name: string, input: unknown, sink: ActionSink): string {
   switch (name) {
     case "classify_lead":
-      sink.onClassify(input as ClassifyInput);
+      sink.onClassify({ ...(input as ClassifyInput), source: "llm" });
       return "noted";
     case "note_discovery":
       sink.onDiscovery(input as NoteDiscoveryInput);

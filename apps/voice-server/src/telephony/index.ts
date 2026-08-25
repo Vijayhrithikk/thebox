@@ -35,6 +35,20 @@ export function assertTelephonyConfigured(): void {
 }
 
 /**
+ * sessionId -> phone number, for every call this process has placed since
+ * boot. In-memory, not persisted — doesn't survive a restart, which matters
+ * for callbackScheduler.ts: a scheduled re-dial only fires if the process
+ * that scheduled it stays up. Real persistence (Postgres) is the Phase 4
+ * follow-up once DATABASE_URL is a real connection string; this is enough
+ * to prove the mechanism works end to end today.
+ */
+const callerNumbers = new Map<string, string>();
+
+export function getCallerNumber(sessionId: string): string | undefined {
+  return callerNumbers.get(sessionId);
+}
+
+/**
  * Places the outbound call on whichever provider TELEPHONY_PROVIDER selects.
  * Exotel is the live default — Twilio and Telnyx are both fully built and
  * kept as documented fallbacks, but both hit the same wall calling India (a
@@ -45,6 +59,7 @@ export function assertTelephonyConfigured(): void {
  */
 export async function placeCall(options: PlaceCallOptions) {
   assertTelephonyConfigured();
+  callerNumbers.set(options.sessionId, options.to);
   if (env.TELEPHONY_PROVIDER === "twilio") return Twilio.placeCall(options);
   if (env.TELEPHONY_PROVIDER === "telnyx") return Telnyx.placeCall(options);
   return Exotel.placeCall(options);
