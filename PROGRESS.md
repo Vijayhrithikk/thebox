@@ -21,7 +21,7 @@ Target: not 60. The best submission they receive.
 
 | # | Criterion | Pts | Status |
 |---|-----------|-----|--------|
-| 1 | Calls & holds a conversation | 25 | 🟡 Phone rings and connects for real; blocked on Twilio upgrade before the actual pipeline can be heard (see blockers) |
+| 1 | Calls & holds a conversation | 25 | 🟡 Phone rings and connects for real (Twilio); full pipeline unheard live — blocked on Telnyx account clearing payment review (see blockers) |
 | 2 | Language handling (TE/HI/EN + mixed) | 10 | 🟡 Telugu TTS audible and real; ASR/LLM code-complete, untested live |
 | 3 | Discovery quality | 10 | 🟡 tools + prompt written, untuned |
 | 4 | Intent classification from indirect answers | 15 | 🟡 Extraction path live-tested and working (correct warm/hot + evidence quotes); deterministic second path not started |
@@ -72,10 +72,23 @@ Also found and fixed a real, separate bug along the way: `/call-status` was hitt
 rather than silently revised: first that the trial disclaimer was passive (wrong — it's
 interactive), then that the block was "just" the disclaimer (wrong — Media Streams itself
 is hard-refused on trial, confirmed by the user directly questioning the first explanation
-and prompting a check of Twilio's actual docs). Upgrading is not deferrable to Phase 7 — it
-blocks testing the core deliverable entirely. Fly.io Dockerfile/fly.toml still ready as the
-eventual production target; the immediate next step is upgrading this Twilio account and
-retrying on the already-working ngrok tunnel.
+and prompting a check of Twilio's actual docs).
+
+**Pivoted telephony provider to Telnyx 2026-08-25.** Monish declined to spend Twilio's
+$20 trial-removal fee. Researched alternatives (Plivo needs a $25 minimum, worse); Telnyx
+has no forced minimum deposit, at the cost of a possible up-to-48h payment review before
+outbound calls actually place — Monish explicitly accepted that tradeoff. Built a full
+`AudioSink` abstraction so `CallSession` no longer knows which provider it's talking to,
+implemented `telephony/telnyx.ts` (Call Control Dial API — streaming params go directly on
+the outbound dial, not declarative TwiML) against field names read straight from the
+official `telnyx` SDK's `.d.ts` files (guessed doc URLs 404'd), and a provider factory
+(`telephony/index.ts`) so Twilio stays fully wired as a fallback behind one env var.
+`server.ts` now runs both providers' routes side by side. Typechecked clean, committed.
+Two gaps are flagged in code, not hidden: no confirmed Telnyx equivalent of Twilio's `mark`
+(playback-complete is inferred from elapsed time) or `clear` (barge-in flush) — both
+unverifiable until a real call gets through. Fly.io Dockerfile/fly.toml still ready as the
+eventual production target. The immediate next step is Monish finishing Telnyx signup and
+the account clearing review, then the first live call attempt over Telnyx.
 
 ## WHAT'S DONE
 
@@ -108,15 +121,21 @@ retrying on the already-working ngrok tunnel.
   the official `sarvamai` SDK. Measured, not estimated: 1693ms -> 251ms time-to-first-byte.
   Requests mu-law @ 8kHz directly from Sarvam, eliminating our own codec conversion for the
   TTS path entirely. First real live-credential test of the project — see decisions table.
+- [x] **Telephony provider abstraction + Telnyx adapter.** `AudioSink` interface decouples
+  `CallSession` from the specific provider; `telephony/telnyx.ts` implements outbound
+  dialing + bidirectional streaming via Telnyx's Call Control API; `telephony/index.ts`
+  factory picks Twilio or Telnyx off `TELEPHONY_PROVIDER`. Both providers' routes live in
+  `server.ts` side by side. Typechecked, committed.
 
 ## WHAT'S NEXT
 
-1. **Decision needed from Monish: upgrade Twilio now (~₹1,700).** No longer deferrable —
-   the trial's interactive disclaimer blocks testing the core deliverable, confirmed by
-   the first live call attempt (see decisions table). Once upgraded: retry `pnpm call` to
-   TEST_PHONE over the already-working ngrok tunnel. This is the real milestone: TTS and
-   brain are separately proven over text/audio, but nothing has confirmed the full
-   ASR -> brain -> TTS loop holds up on an actual phone line yet.
+1. **Blocked on Monish: finish Telnyx signup** (steps in `docs/SETUP.md` §1a), then wait
+   out the payment review (up to 48h). Once `TELNYX_API_KEY`/`TELNYX_PHONE_NUMBER`/
+   `TELNYX_CONNECTION_ID` are real, retry `pnpm call` to TEST_PHONE over the already-working
+   ngrok tunnel. This is the real milestone: TTS and brain are separately proven over
+   text/audio, but nothing has confirmed the full ASR -> brain -> TTS loop holds up on an
+   actual phone line yet. First live Telnyx call is also the first check on the two
+   documented gaps (mark/clear equivalents) — see decisions table.
 2. Phase 3: build the deterministic signal scorer as the second, non-LLM path to
    Hot/Warm/Cold (the LLM-only extraction path already works — this is the redundancy
    the plan calls for so the 15-pt mid-call requirement can't fail on one missed call)
@@ -128,8 +147,9 @@ retrying on the already-working ngrok tunnel.
 
 ## OPEN BLOCKERS
 
-- ⛔ **Twilio still on trial — now confirmed to block all live testing, not just the final
-  call.** Upgrading (~₹1,700, reimbursed) is the next real decision point.
+- ⛔ **Telnyx account pending signup/payment review** — blocks the first live end-to-end
+  call. Twilio remains fully wired as a fallback (needs its own $20 upgrade to unblock,
+  which Monish has declined) — see decisions table.
 - ⛔ DATABASE_URL still a placeholder — needed for Phase 4 callback persistence, not before
 - ⛔ Resume PDF still needed
 
@@ -165,6 +185,10 @@ retrying on the already-working ngrok tunnel.
 | Fly.io `bom` (Mumbai) | Physically closest region to Indian carriers and to Sarvam. Every ms of RTT is scored under "latency kills the conversation" | Vercel can't hold long-lived WebSockets; US regions add ~200ms round trip |
 | TypeScript end to end | One language across realtime server and console; every line has to be defensible in the interview | — |
 | Spend ₹2-4k upfront on real tiers, not free/trial | Brief states cost is not the filter and reimburses on join. A Twilio *trial* account cannot call an unverified number at all and prepends a disclosure message — that alone fails requirement #1 regardless of everything else built | The ₹500-600 free-tier path looked safer but is not actually viable for this specific requirement |
+| Switched primary telephony from Twilio to Telnyx, 2026-08-25 | Monish declined to spend the $20 needed to remove Twilio's trial restriction, even after the mechanism was confirmed to fully block the core deliverable. Researched real alternatives rather than re-arguing the point: Plivo needs a $25 minimum (worse), Telnyx has no forced minimum deposit at all. Tradeoff — up to 48h payment review before a Telnyx number can place calls — was surfaced explicitly and accepted by Monish via a direct choice between "wait it out" and other options | Kept arguing for the Twilio upgrade after a clear, repeated refusal would have been re-litigating a decision that was already made — the job was to find the actual no-cost path, not to keep selling the paid one |
+| `AudioSink` interface + provider factory (`telephony/index.ts`), rather than an `if (provider === 'twilio')` branch inside `CallSession` | `CallSession` already owns enough real-time complexity (ASR, VAD, barge-in, turn state) — it shouldn't also know which telephony wire format it's talking over. Twilio and Telnyx use different message envelopes and different (or unconfirmed) playback-confirmation/buffer-flush signals; isolating that behind one interface means the swap in scripts/call.ts, server.ts's routes, and CallSession's constructor was mechanical, not a rewrite | A branch inside CallSession would have been faster to write once, but every future provider (or the eventual real WhatsApp/callback re-dial code touching call state) would have had to know about both wire formats too |
+| Telnyx Call Control Dial API (stream_url on the outbound dial) over TeXML's declarative `<Stream>` verb | Confirmed via WebFetch that TeXML exists and is closer to Twilio's model, but it's still webhook-driven for an inherently simple case: we already know at dial time that we want bidirectional streaming for the whole call. Passing `stream_url`/`stream_track`/`stream_bidirectional_*` straight on `calls.dial()` (confirmed via the official `telnyx` SDK's `calls.d.ts`) starts streaming automatically the moment the call answers — no extra webhook round trip to explicitly start it | TeXML would have meant maintaining two different declarative-markup dialects (Twilio's TwiML and Telnyx's TeXML) for the same job the Call Control API does in one API call |
+| Twilio's `twilioClient` eager module-scope construction converted to lazy, proactively, before it caused a live failure | Caught while making `TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN` optional in the schema: the old `export const twilioClient = twilio(sid, token)` at module scope would throw the instant this file is imported, since those vars are now legitimately empty whenever `TELEPHONY_PROVIDER=telnyx` — which is the default. Same class of bug already fixed once for the LLM provider modules (see the `assertProviderConfigured()` row above) | Waiting to hit this as a live crash would have meant a broken server on the very next boot, for a bug that was visible just from reading the diff that made the env vars optional |
 
 ---
 
@@ -173,3 +197,4 @@ retrying on the already-working ngrok tunnel.
 - **2026-08-25** — Assignment received. Plan approved. Repo scaffolded, stack locked.
 - **2026-08-25** — Candidate identity confirmed (M. Monish Vijay, +91 7330671778, doubling as test number). Budget decision: real paid tiers, not free/trial. Phase 1 telephony spine committed.
 - **2026-08-25** — Phase 2 realtime loop written and typechecked clean: Soniox ASR, dual-signal barge-in (VAD + ASR partials), Claude Opus 5 fast-mode agent with sentence-streamed TTS and non-blocking tool calls. Blocked on live credentials for the real test — code compiling is not the bar, a working call is.
+- **2026-08-25** — Two live Twilio calls confirmed the trial account hard-blocks `<Stream>` entirely (not just a passive disclaimer — corrected in the decisions table after the user directly questioned the first explanation). Monish declined the $20 upgrade. Pivoted primary telephony to Telnyx: built `AudioSink` abstraction, `telephony/telnyx.ts` (Call Control Dial API, field names read from the official SDK's `.d.ts`), and a provider factory so Twilio stays wired as a fallback. `server.ts`, `session.ts`, `scripts/call.ts` all updated to the new abstraction; typechecked clean, committed. Blocked on Monish finishing Telnyx signup and the account clearing payment review before the first live end-to-end call can be attempted.
