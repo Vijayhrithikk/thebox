@@ -1,13 +1,15 @@
 import { SarvamAIClient, type SarvamAI } from "sarvamai";
 import { env } from "../config.js";
-import { toFrames } from "../call/audio.js";
+import { toFrames, toPcm16Frames } from "../call/audio.js";
 
 const client = new SarvamAIClient({ apiSubscriptionKey: env.SARVAM_API_KEY });
 
 export type Language = "te-IN" | "hi-IN" | "en-IN";
+/** Which wire format Sarvam should hand back — matched to whichever telephony provider's AudioSink is playing it. */
+export type OutputCodec = "mulaw" | "linear16";
 
 export interface SpokenSentence {
-  /** Ready to write straight onto a Twilio media stream — Sarvam is asked for mu-law @ 8kHz directly, so there's no codec conversion left to do. */
+  /** Ready to write straight onto the media stream — Sarvam is asked for the target codec @ 8kHz directly, so there's no conversion left to do on our side. */
   frames: Buffer[];
   /** Wall-clock ms from send to first audio byte — the number the batch REST endpoint measured at ~1.7s. */
   latencyMs: number;
@@ -39,7 +41,10 @@ export class SarvamVoice {
   private queue: Promise<unknown> = Promise.resolve();
   private language: Language;
 
-  constructor(initialLanguage: Language) {
+  constructor(
+    initialLanguage: Language,
+    private readonly codec: OutputCodec = "mulaw",
+  ) {
     this.language = initialLanguage;
     this.opening = this.connect();
   }
@@ -63,7 +68,7 @@ export class SarvamVoice {
     socket.configureConnection({
       language_code: language as SarvamAI.ConfigureConnection.Data.LanguageCode,
       speaker: env.SARVAM_VOICE as SarvamAI.ConfigureConnection.Data.Speaker,
-      output_audio_codec: "mulaw",
+      output_audio_codec: this.codec,
       speech_sample_rate: 8000,
     });
   }
@@ -98,11 +103,13 @@ export class SarvamVoice {
           if (!firstByteMs) firstByteMs = Math.round(performance.now() - startedAt);
           chunks.push(Buffer.from(message.data.audio, "base64"));
         } else if (message.type === "event" && message.data.event_type === "final") {
-          const mulaw = Buffer.concat(chunks);
+          const audio = Buffer.concat(chunks);
+          // mu-law is 1 byte/sample @ 8kHz; linear16 is 2 bytes/sample @ 8kHz.
+          const bytesPerMs = this.codec === "mulaw" ? 8 : 16;
           resolve({
-            frames: toFrames(mulaw),
+            frames: this.codec === "mulaw" ? toFrames(audio) : toPcm16Frames(audio),
             latencyMs: firstByteMs || Math.round(performance.now() - startedAt),
-            durationMs: Math.round(mulaw.length / 8),
+            durationMs: Math.round(audio.length / bytesPerMs),
           });
         } else if (message.type === "error") {
           reject(new Error(`Sarvam streaming TTS: ${message.data.message}`));

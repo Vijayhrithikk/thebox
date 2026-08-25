@@ -73,6 +73,7 @@ function base64(s: string): string {
  *      testing shows a lag here, that's the first place to look.
  */
 export class TelnyxAudioSink implements AudioSink {
+  readonly codec = "mulaw" as const;
   private speakingUntil = 0;
 
   constructor(

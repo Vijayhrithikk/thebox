@@ -1,7 +1,6 @@
 import type { FastifyBaseLogger } from "fastify";
 import type { AudioSink } from "./audio-sink.js";
 import { EnergyVad } from "./vad.js";
-import { mulawToPcm16 } from "./audio.js";
 import { SonioxStream } from "../providers/soniox.js";
 import { SarvamVoice, type Language } from "../providers/sarvam.js";
 import { Agent, type StopReason } from "../brain/agent.js";
@@ -54,17 +53,42 @@ export class CallSession {
     public readonly sessionId: string,
     private readonly log: FastifyBaseLogger,
   ) {
-    this.voice = new SarvamVoice(this.currentLanguage);
+    this.voice = new SarvamVoice(this.currentLanguage, out.codec);
     this.agent = new Agent(createLiveProvider());
     this.extractionProvider = createLiveProvider();
     this.sink = new ConsoleActionSink((obj, msg) => this.log.info({ sessionId, ...obj as object }, msg));
     this.wireAsr();
+    void this.greet();
   }
 
-  /** Twilio's inbound 20ms mu-law frame, straight off the media socket. */
-  handleInboundFrame(mulaw: Buffer): void {
-    const pcm = mulawToPcm16(mulaw);
+  /**
+   * This is an outbound sales call — the agent has to open, not wait for the
+   * caller to speak first. Without this, the call sits in total silence
+   * until the caller says something, which for an unknown incoming number
+   * often never happens at all. Only caught now because this is the first
+   * time the full pipeline has actually run against a live phone call.
+   */
+  private async greet(): Promise<void> {
+    this.agentBusy = true;
+    try {
+      const stopReason = await this.agent.greet((sentence) => {
+        void this.speak(sentence);
+      });
+      this.log.info({ sessionId: this.sessionId, stopReason }, "greeting sent");
+    } catch (err) {
+      this.log.error({ err, sessionId: this.sessionId }, "greeting failed");
+    } finally {
+      this.agentBusy = false;
+    }
+  }
 
+  /**
+   * One 20ms frame of inbound audio, already decoded to linear16 PCM by the
+   * route handler — codec differences (Twilio/Telnyx's μ-law vs Exotel's
+   * native PCM) are a wire-format concern for that boundary, not something
+   * CallSession needs to know about.
+   */
+  handleInboundFrame(pcm: Buffer): void {
     if (this.vad.feed(pcm) && this.out.isSpeaking) {
       this.bargeIn("vad");
     }

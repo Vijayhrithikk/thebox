@@ -1,9 +1,12 @@
 /**
  * Everything CallSession needs to push audio back to the caller, with zero
- * knowledge of which telephony provider (Twilio, Telnyx) is on the other
- * end of the WebSocket — see telephony/index.ts for how one gets picked.
+ * knowledge of which telephony provider (Twilio, Telnyx, Exotel) is on the
+ * other end of the WebSocket — see telephony/index.ts for how one gets
+ * picked.
  */
 export interface AudioSink {
+  /** Which wire format `play()` expects — Twilio/Telnyx speak μ-law, Exotel speaks raw linear16 PCM. Drives which codec CallSession asks Sarvam for. */
+  readonly codec: "mulaw" | "linear16";
   /** True while audio we queued is still expected to be playing. */
   readonly isSpeaking: boolean;
   /** Milliseconds of queued audio still to play. */

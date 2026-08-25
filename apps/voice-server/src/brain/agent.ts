@@ -48,6 +48,23 @@ export class Agent {
   /** Sends the caller's turn, streams the reply sentence-by-sentence via onSentence, returns why it stopped. */
   async respond(userText: string, onSentence: (text: string) => void): Promise<StopReason> {
     this.history.push({ role: "user", text: userText });
+    return this.runTurn(onSentence);
+  }
+
+  /**
+   * Fires once, right when the call connects — this is an outbound sales
+   * call, so the agent has to speak first per the system prompt's "Identity
+   * and opening" section, not wait for the caller to say something first.
+   * Anthropic's and OpenAI-shaped chat APIs both require the first message
+   * to be role:"user", so this seeds a synthetic kickoff turn rather than
+   * calling streamTurn on an empty history.
+   */
+  async greet(onSentence: (text: string) => void): Promise<StopReason> {
+    this.history.push({ role: "user", text: "[Call just connected. Begin speaking now, following your opening instructions.]" });
+    return this.runTurn(onSentence);
+  }
+
+  private async runTurn(onSentence: (text: string) => void): Promise<StopReason> {
     this.currentAbort = new AbortController();
 
     try {

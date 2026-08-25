@@ -20,8 +20,16 @@ for (const key of Object.keys(process.env)) {
  * touches is optional so Phase 1 can run before every account exists.
  */
 const schema = z.object({
-  /** Which telephony platform places the call. Both wired behind telephony/index.ts's factory — see telephony/telnyx.ts for why Telnyx is the live default despite Twilio being fully built. */
-  TELEPHONY_PROVIDER: z.enum(["twilio", "telnyx"]).default("telnyx"),
+  /**
+   * Which telephony platform places the call. All three wired behind
+   * telephony/index.ts's factory. Exotel is the live default — both Twilio
+   * and Telnyx hit the same India-calling wall (Twilio's trial hard-blocks
+   * `<Stream>`, Telnyx gates India behind an account-verification tier
+   * neither the assignment's budget nor timeline could clear) — see
+   * telephony/exotel.ts for why a same-country Indian provider sidesteps
+   * that wall entirely.
+   */
+  TELEPHONY_PROVIDER: z.enum(["twilio", "telnyx", "exotel"]).default("exotel"),
 
   TWILIO_ACCOUNT_SID: z.string().startsWith("AC").optional(),
   TWILIO_AUTH_TOKEN: z.string().min(10).optional(),
@@ -31,6 +39,14 @@ const schema = z.object({
   TELNYX_PHONE_NUMBER: z.string().startsWith("+").optional(),
   /** The Call Control Application ID — Telnyx calls this "connection_id" on the wire. */
   TELNYX_CONNECTION_ID: z.string().optional(),
+
+  EXOTEL_SID: z.string().optional(),
+  EXOTEL_API_KEY: z.string().min(5).optional(),
+  EXOTEL_API_TOKEN: z.string().min(5).optional(),
+  /** The ExoPhone number, domestic format (e.g. "08047280713") — Exotel doesn't use E.164 here. */
+  EXOTEL_EXOPHONE: z.string().optional(),
+  /** App Bazaar flow ID holding the Voicebot Applet — the flow's WSS URL is configured once in the portal, not passed per-call. */
+  EXOTEL_APP_ID: z.string().optional(),
 
   SARVAM_API_KEY: z.string().min(5),
   SARVAM_VOICE: z.string().default("priya"),
@@ -86,7 +102,14 @@ if (!parsed.success) {
 
 export const env = parsed.data;
 
-/** wss:// URL for the active telephony provider's media stream — different path per provider, both served by this same process. */
+/**
+ * wss:// URL for the active telephony provider's media stream — different
+ * path per provider, all served by this same process. Exotel doesn't
+ * actually call this: its Voicebot Applet's WSS URL is configured once,
+ * statically, in the App Bazaar portal rather than passed per-call like
+ * Twilio's TwiML or Telnyx's Dial params — kept here anyway so the mapping
+ * of provider → path stays in one place for reference.
+ */
 export function streamUrl(): string {
   if (!env.PUBLIC_HOST) {
     throw new Error(
@@ -94,6 +117,11 @@ export function streamUrl(): string {
     );
   }
   const host = env.PUBLIC_HOST.replace(/^https?:\/\//, "").replace(/\/$/, "");
-  const path = env.TELEPHONY_PROVIDER === "telnyx" ? "/telnyx/media" : "/media";
+  const path =
+    env.TELEPHONY_PROVIDER === "telnyx"
+      ? "/telnyx/media"
+      : env.TELEPHONY_PROVIDER === "exotel"
+        ? "/exotel/media"
+        : "/media";
   return `wss://${host}${path}`;
 }

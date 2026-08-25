@@ -12,6 +12,7 @@ import type { AudioSink } from "./audio-sink.js";
  * few hundred ms of already-queued speech playing over the human.
  */
 export class OutboundAudio implements AudioSink {
+  readonly codec = "mulaw" as const;
   private markSeq = 0;
   private pending = new Map<string, () => void>();
   private speakingUntil = 0;

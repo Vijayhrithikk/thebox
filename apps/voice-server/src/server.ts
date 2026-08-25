@@ -4,9 +4,11 @@ import formbody from "@fastify/formbody";
 import { env } from "./config.js";
 import { CallSession } from "./call/session.js";
 import { OutboundAudio } from "./call/media-stream.js";
+import { mulawToPcm16 } from "./call/audio.js";
 import { assertProviderConfigured } from "./brain/providers/index.js";
 import { assertTelephonyConfigured } from "./telephony/index.js";
 import { TelnyxAudioSink } from "./telephony/telnyx.js";
+import { ExotelAudioSink } from "./telephony/exotel.js";
 
 // Fail loudly at boot, not three seconds into a live call — the actual point
 // of validating env in the first place. Standalone scripts (say.ts) skip
@@ -68,7 +70,7 @@ app.get("/media", { websocket: true }, (socket) => {
 
       case "media": {
         if (session && msg.media?.payload) {
-          session.handleInboundFrame(Buffer.from(msg.media.payload, "base64"));
+          session.handleInboundFrame(mulawToPcm16(Buffer.from(msg.media.payload, "base64")));
         }
         break;
       }
@@ -152,7 +154,7 @@ app.get("/telnyx/media", { websocket: true }, (socket) => {
       const track = String(msg.media?.track ?? "").toLowerCase();
       const isOwnEcho = track.includes("outbound");
       if (session && msg.media?.payload && !isOwnEcho) {
-        session.handleInboundFrame(Buffer.from(msg.media.payload, "base64"));
+        session.handleInboundFrame(mulawToPcm16(Buffer.from(msg.media.payload, "base64")));
       }
       return;
     }
@@ -169,6 +171,66 @@ app.get("/telnyx/media", { websocket: true }, (socket) => {
   });
   socket.on("error", (err: Error) =>
     app.log.error({ err, sessionId: session?.sessionId }, "telnyx socket error"),
+  );
+});
+
+/**
+ * Exotel's AgentStream media socket, wired through the Voicebot Applet
+ * configured once in App Bazaar (see telephony/exotel.ts's placeCall doc
+ * for why the WSS URL can't be passed per-call the way Twilio/Telnyx do).
+ *
+ * Unlike Telnyx, Exotel's event sequence is explicitly documented: a
+ * "start" event (carrying stream_sid, call_sid, custom_parameters) always
+ * precedes "media", so the session is built eagerly here rather than
+ * lazily off the first media frame. Audio arrives as raw linear16 PCM
+ * already — no μ-law decode needed on this leg at all.
+ */
+app.get("/exotel/media", { websocket: true }, (socket) => {
+  let session: CallSession | null = null;
+
+  socket.on("message", (raw: Buffer) => {
+    let msg: any;
+    try {
+      msg = JSON.parse(raw.toString());
+    } catch {
+      return;
+    }
+
+    switch (msg.event) {
+      case "start": {
+        const sessionId = msg.start?.custom_parameters?.CustomField ?? msg.start?.call_sid ?? msg.stream_sid;
+        const audio = new ExotelAudioSink(socket as any, msg.start?.stream_sid ?? msg.stream_sid);
+        session = new CallSession(audio, sessionId, app.log);
+        app.log.info({ sessionId, streamSid: msg.start?.stream_sid }, "exotel media stream open — call is live");
+        break;
+      }
+
+      case "media": {
+        if (session && msg.media?.payload) {
+          session.handleInboundFrame(Buffer.from(msg.media.payload, "base64"));
+        }
+        break;
+      }
+
+      case "mark": {
+        session?.onMark(msg.mark?.name);
+        break;
+      }
+
+      case "stop": {
+        app.log.info({ sessionId: session?.sessionId }, "exotel media stream closed");
+        session?.close();
+        break;
+      }
+    }
+  });
+
+  socket.on("close", () => {
+    app.log.info({ sessionId: session?.sessionId }, "exotel socket closed");
+    session?.close();
+  });
+  socket.on("error", (err: Error) =>
+    app.log.error({ err, sessionId: session?.sessionId }, "exotel socket error"),
   );
 });
 

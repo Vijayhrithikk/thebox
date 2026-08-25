@@ -1,13 +1,17 @@
 /**
- * Audio plumbing between our TTS provider and Twilio's media stream.
+ * Audio plumbing between our TTS provider and the telephony media stream.
  *
- * Twilio speaks exactly one dialect on a <Stream>: 8 kHz mono G.711 μ-law,
- * base64-encoded, in 20 ms frames. Sarvam can hand us 8 kHz PCM directly, so
- * there is no resampling step — just PCM16 → μ-law and framing.
+ * Twilio and Telnyx both speak 8 kHz mono G.711 μ-law, base64-encoded, in
+ * 20 ms frames. Sarvam can hand us 8 kHz PCM directly, so for those two
+ * providers there's no resampling step — just PCM16 → μ-law and framing.
+ * Exotel's AgentStream instead speaks raw linear16 PCM directly (no μ-law
+ * involved at all) — see `toPcm16Frames` below.
  */
 
 /** 8000 Hz × 0.02 s × 1 byte per μ-law sample. */
 export const FRAME_BYTES = 160;
+/** 8000 Hz × 0.02 s × 2 bytes per linear16 sample. */
+export const PCM16_FRAME_BYTES = 320;
 export const FRAME_MS = 20;
 
 const MULAW_BIAS = 0x84;
@@ -98,6 +102,22 @@ export function toFrames(mulaw: Buffer): Buffer[] {
     } else {
       // μ-law silence is 0xFF, not 0x00.
       const padded = Buffer.alloc(FRAME_BYTES, 0xff);
+      slice.copy(padded);
+      frames.push(padded);
+    }
+  }
+  return frames;
+}
+
+/** Split linear16 PCM bytes into exact 20 ms frames, zero-padding the tail (PCM silence is 0x00). */
+export function toPcm16Frames(pcm: Buffer): Buffer[] {
+  const frames: Buffer[] = [];
+  for (let i = 0; i < pcm.length; i += PCM16_FRAME_BYTES) {
+    const slice = pcm.subarray(i, i + PCM16_FRAME_BYTES);
+    if (slice.length === PCM16_FRAME_BYTES) {
+      frames.push(slice);
+    } else {
+      const padded = Buffer.alloc(PCM16_FRAME_BYTES, 0x00);
       slice.copy(padded);
       frames.push(padded);
     }
