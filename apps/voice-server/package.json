@@ -12,14 +12,15 @@
     "say": "tsx src/scripts/say.ts"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.70.0",
+    "@anthropic-ai/sdk": "^0.120.0",
     "@fastify/websocket": "^11.0.2",
     "dotenv": "^16.4.7",
     "fastify": "^5.2.0",
     "pino": "^9.6.0",
     "twilio": "^5.4.0",
     "ws": "^8.18.0",
-    "zod": "^3.24.1"
+    "zod": "^3.24.1",
+    "pino-pretty": "^13.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.5",

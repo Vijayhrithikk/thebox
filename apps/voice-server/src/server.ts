@@ -1,8 +1,7 @@
 import Fastify from "fastify";
 import websocket from "@fastify/websocket";
 import { env } from "./config.js";
-import { OutboundAudio } from "./call/media-stream.js";
-import { synthesize } from "./providers/sarvam.js";
+import { CallSession } from "./call/session.js";
 
 const app = Fastify({
   logger: { level: env.LOG_LEVEL, transport: { target: "pino-pretty" } },
@@ -22,19 +21,18 @@ app.post("/call-status", async (request) => {
 });
 
 /**
- * Twilio's bidirectional media stream.
+ * Twilio's bidirectional media stream — one socket per call.
  *
  * Message shapes we care about:
  *   start  — carries streamSid and any <Parameter> values from the TwiML
- *   media  — 20 ms of inbound μ-law from the caller, base64
- *   mark   — echo of a mark we sent, meaning our audio finished playing
+ *   media  — 20 ms of inbound mu-law from the caller, base64
+ *   mark   — echo of a mark we sent, meaning that queued audio finished playing
  *   stop   — the call ended
  */
 app.get("/media", { websocket: true }, (socket) => {
-  let out: OutboundAudio | null = null;
-  let sessionId = "unknown";
+  let session: CallSession | null = null;
 
-  socket.on("message", async (raw: Buffer) => {
+  socket.on("message", (raw: Buffer) => {
     let msg: any;
     try {
       msg = JSON.parse(raw.toString());
@@ -44,45 +42,37 @@ app.get("/media", { websocket: true }, (socket) => {
 
     switch (msg.event) {
       case "start": {
-        sessionId = msg.start?.customParameters?.sessionId ?? msg.start.streamSid;
-        out = new OutboundAudio(socket as any, msg.start.streamSid);
-        app.log.info({ sessionId, streamSid: msg.start.streamSid }, "media stream open");
-
-        // Phase 1 exit criterion: the phone rings and a human hears natural Telugu.
-        // Phase 2 replaces this with the full ASR → LLM → TTS loop.
-        const greeting =
-          "నమస్కారం! నేను వర్షిత తరఫున మాట్లాడుతున్నాను. " +
-          "మీ e-commerce website గురించి ఒక్క నిమిషం మాట్లాడొచ్చా?";
-        try {
-          const speech = await synthesize(greeting, "te-IN");
-          app.log.info({ ttsMs: speech.latencyMs, durationMs: speech.durationMs }, "greeting ready");
-          await out.play(speech.frames);
-          app.log.info({ sessionId }, "greeting finished playing");
-        } catch (err) {
-          app.log.error({ err }, "TTS failed — caller would hear silence");
-        }
+        const sessionId = msg.start?.customParameters?.sessionId ?? msg.start.streamSid;
+        session = new CallSession(socket as any, msg.start.streamSid, sessionId, app.log);
+        app.log.info({ sessionId, streamSid: msg.start.streamSid }, "media stream open — call is live");
         break;
       }
 
       case "media": {
-        // Phase 2 pipes this into Soniox. Ignored for now.
+        if (session && msg.media?.payload) {
+          session.handleInboundFrame(Buffer.from(msg.media.payload, "base64"));
+        }
         break;
       }
 
       case "mark": {
-        out?.onMark(msg.mark?.name);
+        session?.onMark(msg.mark?.name);
         break;
       }
 
       case "stop": {
-        app.log.info({ sessionId }, "media stream closed by Twilio");
+        app.log.info({ sessionId: session?.sessionId }, "media stream closed by Twilio");
+        session?.close();
         break;
       }
     }
   });
 
-  socket.on("close", () => app.log.info({ sessionId }, "socket closed"));
-  socket.on("error", (err: Error) => app.log.error({ err, sessionId }, "socket error"));
+  socket.on("close", () => {
+    app.log.info({ sessionId: session?.sessionId }, "socket closed");
+    session?.close();
+  });
+  socket.on("error", (err: Error) => app.log.error({ err, sessionId: session?.sessionId }, "socket error"));
 });
 
 await app.listen({ port: env.PORT, host: "0.0.0.0" });
