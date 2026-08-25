@@ -6,6 +6,54 @@
 
 ---
 
+## STATUS AS OF 2026-08-26 — read this first
+
+Everything below the scorecard describes the project's history through the custom-built
+telephony/ASR/LLM/TTS pipeline (Twilio → Telnyx → Exotel, Soniox, DeepSeek, Sarvam TTS) —
+real, working history, kept because the reasoning in it is still true and still worth being
+able to defend. **It no longer describes what's running.**
+
+As of 2026-08-25/26, the entire live call moved to **Sarvam's managed Voice Agent**
+(configured directly in Sarvam's portal, not in this codebase) — their own STT+LLM+TTS
+stack, connected to the same Exotel account. This codebase's job shrank to exactly what it
+still does: the webhook backend Sarvam's agent tools call (`/webhooks/classify`,
+`/webhooks/discovery`, `/webhooks/callback`, `/webhooks/call-ended`), the WhatsApp sender
+(Baileys), the callback scheduler/re-dial, and a small monitoring console. Twilio, Telnyx,
+Soniox, our own Sarvam TTS streaming, Claude/Anthropic, and the entire custom
+ASR→brain→TTS orchestration layer were deleted, not just unused — see the decisions table's
+final entries for why, and the commit that did it (`git log --oneline | grep "Strip to"`)
+for the full list of what went.
+
+**Live, deployed, and confirmed end to end (2026-08-25/26):**
+- The Sarvam agent places a real call, holds a real bilingual conversation, and handles
+  guardrails correctly (wrong-number, not-interested) — confirmed via Sarvam's own portal
+  test-call feature.
+- Mid-call WhatsApp: `/webhooks/classify` → real WhatsApp send, tested live.
+- Post-call follow-up: `/webhooks/call-ended` → LLM-composed text + architecture.png +
+  resume.pdf, all three confirmed delivered over WhatsApp.
+- Callback scheduling: spoken time → resolved datetime → scheduled re-dial through the
+  same Exotel/Sarvam flow.
+- Deployed to a real EC2 instance (not a laptop + ngrok): `https://15-207-88-161.sslip.io`,
+  Docker + Caddy (automatic HTTPS via Let's Encrypt against an sslip.io hostname, since no
+  domain was available), WhatsApp session and `.env` transferred directly (never
+  committed). Monitoring console at the same URL's `/`.
+- Repo is public: https://github.com/Vijayhrithikk/thebox — resume PDF deliberately
+  gitignored (real personal details), everything else tracked.
+
+**Real open gaps, not hidden:**
+- The callback scheduler and Exotel `placeCall()` re-dial path are in-memory only — a
+  server restart loses anything scheduled. Needs Postgres (`DATABASE_URL` still a
+  placeholder) to be genuinely durable.
+- No voicemail/answering-machine detection.
+- Sarvam's exact variable name for "the number being called" inside a campaign (used in the
+  webhook tool bodies) was never confirmed from documentation — confirm it directly in the
+  Sarvam tool-builder UI's variable picker if the webhook payload's `caller_number` ever
+  comes through empty.
+- Code-switching rehearsal (heavy Telugu-English mixing, pure Hindi) has had less live
+  testing than the Telugu-first path.
+
+---
+
 ## THE GOAL
 
 Build an AI voice system that **autonomously calls +91 8688664337**, speaks Telugu /
@@ -21,14 +69,14 @@ Target: not 60. The best submission they receive.
 
 | # | Criterion | Pts | Status |
 |---|-----------|-----|--------|
-| 1 | Calls & holds a conversation | 25 | 🟢 **First full live call confirmed 2026-08-25** (Exotel): phone rang, real Telugu greeting heard on pickup. Delivery quality needs a real refinement pass — see current state |
-| 2 | Language handling (TE/HI/EN + mixed) | 10 | 🟢 Telugu TTS confirmed live on a real call; Hindi/English pivot and code-switching still need live rehearsal |
-| 3 | Discovery quality | 10 | 🟡 tools + prompt written, untuned |
-| 4 | Intent classification from indirect answers | 15 | 🟡 Extraction path live-tested and working (correct warm/hot + evidence quotes); deterministic second path not started |
-| 5 | Mid-call WhatsApp action | 15 | ⬜ not started (Phase 4) |
-| 6 | Callback scheduling from speech | 10 | 🟢 resolver live-tested: relative dates, festival anchors, ambiguous times all correct |
-| 7 | Follow-up + WhatsApp quality | 10 | ⬜ not started (Phase 4) |
-| 8 | Engineering judgement | 5 | 🟢 architecture defensible — see Decisions table |
+| 1 | Calls & holds a conversation | 25 | 🟢 Sarvam Voice Agent (Exotel telephony) runs the live call — real Telugu conversation confirmed in portal testing, correct guardrail handling (wrong-number, not-interested), deployed live at https://15-207-88-161.sslip.io |
+| 2 | Language handling (TE/HI/EN + mixed) | 10 | 🟢 Telugu-first with English/Hindi switch confirmed in Sarvam portal testing; heavier code-switching rehearsal still light |
+| 3 | Discovery quality | 10 | 🟢 note_discovery tool fires per slot, confirmed live |
+| 4 | Intent classification from indirect answers | 15 | 🟢 classify_lead tool confirmed live, correct wrong-number/cold handling seen in testing |
+| 5 | Mid-call WhatsApp action | 15 | 🟢 Live-tested end to end: /webhooks/classify → WhatsApp sent while call context still fresh |
+| 6 | Callback scheduling from speech | 10 | 🟢 resolver + scheduler live-tested; in-memory only, doesn't survive a restart (see blockers) |
+| 7 | Follow-up + WhatsApp quality | 10 | 🟢 Live-tested end to end: text (LLM-composed from call outcome) + architecture.png + resume.pdf, all three confirmed delivered |
+| 8 | Engineering judgement | 5 | 🟢 architecture defensible — see Decisions table, including the pivot away from the custom pipeline |
 
 ---
 
@@ -253,3 +301,4 @@ more plumbing.
 - **2026-08-25** — Phase 2 realtime loop written and typechecked clean: Soniox ASR, dual-signal barge-in (VAD + ASR partials), Claude Opus 5 fast-mode agent with sentence-streamed TTS and non-blocking tool calls. Blocked on live credentials for the real test — code compiling is not the bar, a working call is.
 - **2026-08-25** — Two live Twilio calls confirmed the trial account hard-blocks `<Stream>` entirely (not just a passive disclaimer — corrected in the decisions table after the user directly questioned the first explanation). Monish declined the $20 upgrade. Pivoted primary telephony to Telnyx: built `AudioSink` abstraction, `telephony/telnyx.ts` (Call Control Dial API, field names read from the official SDK's `.d.ts`), and a provider factory so Twilio stays wired as a fallback. `server.ts`, `session.ts`, `scripts/call.ts` all updated to the new abstraction; typechecked clean, committed. Blocked on Monish finishing Telnyx signup and the account clearing payment review before the first live end-to-end call can be attempted.
 - **2026-08-25** — Telnyx's India-calling gate turned out to be a KYC/verification tier, not resolvable by funding the account (confirmed live). Monish corrected the session's framing: this was never about preferring the cheapest provider, it was a real inability to pay Twilio's fee — see [[cost-avoidance-telephony]]. Pivoted a third time, to Exotel (Indian domestic provider, sidesteps cross-border KYC entirely, free trial, no card). Live-tested Exotel's API directly against a real trial account, discovered its "outgoing call to flow" mode, built `telephony/exotel.ts` + `ExotelAudioSink` (raw linear16 PCM, not μ-law — `AudioSink` gained a `codec` field, `SarvamVoice` and `audio.ts` made codec-aware). **First full live call succeeded**: phone rang, real Telugu greeting heard on pickup. Getting there also surfaced and fixed a real, provider-independent bug — `Agent.respond()` had no way to let the agent speak first, invisible until this was the first test to ever exercise the real live-call trigger sequence. Typechecked, committed. Monish's assessment: working, needs a real refinement pass on delivery quality next.
+- **2026-08-25/26** — Several rounds of live-tuning the custom pipeline (Sarvam TTS pace/temperature, prompt de-scripting after catching the model reciting a literal example verbatim, a real Soniox bug — `<end>` endpoint-detection tokens were getting concatenated straight into transcripts, silently garbling every turn). Mid-tuning, Monish tested Sarvam's own in-house Voice Agent product directly and it sounded better than the custom pipeline was managing to. Researched the integration model rather than assume: confirmed Exotel is a supported Sarvam telephony partner (no further provider switch needed) and that Sarvam's tools support custom HTTPS webhooks (so the WhatsApp/scheduler logic already built could be kept). Decision: **pivot the entire live call to Sarvam's managed Voice Agent**, configured in their portal. Deleted the entire custom ASR→brain→TTS pipeline as dead code (not left unused — actually removed, ~2600 net lines): Twilio, Telnyx, Soniox, our own Sarvam TTS streaming, Anthropic, and all of `call/`. What's left: Exotel (`placeCall()` only, for the callback re-dial), the webhook backend Sarvam's tools call, WhatsApp (Baileys), and a small monitoring console served at `/`. Built the previously-missing post-call follow-up (`actions/followup.ts` — LLM-composed text + architecture image + resume, all three confirmed delivered live) and an `on_end`-triggered webhook for it, closing a real scored gap (assignment Section 06). Read the full assignment PDF for the first time this session end-to-end and confirmed the scorecard/deliverables list matched what was already being tracked. Deployed to a real EC2 instance (Docker + Caddy, automatic HTTPS via sslip.io) rather than staying on a laptop + ngrok tunnel; pushed the repo public to GitHub. See "STATUS AS OF 2026-08-26" at the top of this file for the current state in full.
