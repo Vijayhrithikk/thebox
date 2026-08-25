@@ -62,16 +62,19 @@ done until a live call to the test number confirms it.
 
 ## WHAT'S NEXT
 
-1. Twilio upgrade completes -> first live `pnpm call` to TEST_PHONE, judge whether the
-   Telugu opener sounds human and the conversation loop actually holds up on a real line
-2. Soniox + Sarvam + Anthropic keys land -> same live test, full loop
+1. Sign up for Twilio **trial** (no card, 75 free voice minutes) + verify TEST_PHONE as a
+   caller ID -> first live `pnpm call` to TEST_PHONE, judge whether the Telugu opener
+   sounds human and the conversation loop actually holds up on a real line. Zero spend.
+2. Soniox + Sarvam + Anthropic keys land -> same live test, full loop. All free-tier.
 3. Phase 3: tune the deterministic intent scorer and discovery slot-filling against real
    rehearsal transcripts (Monish is fluent in Telugu + Hindi -- no external testers needed)
+4. Phase 7 only: Twilio account upgrade (~₹1,700) — the single moment real money is spent,
+   right before the real call to 8688664337 (see Decisions row on telephony cost below)
 
 ## OPEN BLOCKERS
 
-- ⛔ Twilio account upgrade in progress — nothing can be live-tested until this lands
-- ⛔ Soniox / Sarvam / Anthropic API keys not yet in .env
+- ⛔ Twilio trial signup not yet done (no cost — see decision below)
+- ⛔ Soniox / Sarvam / Anthropic API keys not yet in .env (no cost — free tiers)
 - ⛔ Resume PDF still needed
 
 ---
@@ -82,6 +85,8 @@ done until a live call to the test number confirms it.
 |---|---|---|
 | Custom orchestrator over Twilio Media Streams, not Vapi/Retell | We own the turn loop, so mid-call WhatsApp timing is provable and barge-in is tunable | Managed platforms make the 15-pt mid-call requirement a black box and every submission looks identical |
 | Twilio (US number) for telephony | Only Tier-1 provider permitting India outbound without an Indian-entity KYC. Twilio dropped India (+91) numbers Aug 2024 but calling *to* Indian mobiles from a non-India number is explicitly permitted with recipient consent — which the brief itself grants | Exotel/Ozonetel need GST + business KYC. Plivo viable, kept as documented fallback |
+| Twilio **trial** account through Phase 6; upgrade (~₹1,700) deferred to Phase 7 only | Trial gives 75 free voice minutes with no card, enough for every rehearsal — restricted only to *verified* numbers, and every rehearsal targets our own verified test number. The recruiter's number is the one call that needs an unverified line, so that's the only moment upgrading matters | Checked Plivo (min. upgrade $25, worse), Vonage, Telnyx — every legitimate provider gates unrestricted outbound behind a paid upgrade as anti-fraud regulation, not a Twilio-specific cost. Provider-shopping doesn't find cheaper |
+| Rejected: physical GSM module / SIM800 or spare-Android-phone telephony bridge | Would mean discarding an already-working, typechecked Twilio WebSocket integration to hand-solder analog audio lines (module) or fight Android's OS-level restrictions on live call-audio access (phone), plus rebuilding ring/answer/hangup detection that Twilio gives for free via webhooks | Real zero-recurring-cost path, and legitimate — but the incremental saving is only the ₹1,700 already deferred to the last step, for genuine multi-day hardware/audio-debugging risk on a tight timeline. Decided with the user 2026-08-25 |
 | Soniox for ASR | 8.2% Telugu WER vs Google's 37%. True streaming, automatic language ID, mid-sentence Telugu↔English code-switching with zero config | Deepgram has no real Telugu. Whisper is not streaming |
 | Sarvam Bulbul v3 for TTS | Native Telugu with Tenglish code-switching, sub-250ms TTFB, Indian female voice (the brief says female lands better on outbound here), ₹30/10k chars | ElevenLabs is fine but not natively Tenglish; kept as fallback |
 | Claude Opus 5 + **fast mode** in-call | `speed:"fast"` gives up to 2.5x output tokens/sec — the single biggest LLM latency lever. Best-in-class tool use, which the mid-call action depends on | — |

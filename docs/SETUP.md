@@ -1,7 +1,10 @@
 # Credential checklist — do these in order
 
 Everything below runs in parallel with the build. **Item 1 is the critical path** — nothing
-can ring a phone until Twilio is live. Total spend: roughly ₹2,000–4,000, reimbursed if you join.
+can ring a phone until Twilio is live. **Spend today: ₹0.** Every provider here has a free
+tier that covers the entire build-and-rehearse phase. The one real cost (~₹1,700, Twilio's
+account upgrade) is deliberately deferred to Phase 7, the day we're ready to place the actual
+call to the recruiter — see the note at the end of item 1. It's reimbursed either way.
 
 Paste each key into `.env` (copy `.env.example` first). Never commit `.env`.
 
@@ -9,18 +12,30 @@ Paste each key into `.env` (copy `.env.example` first). Never commit `.env`.
 
 ## 1. Twilio — telephony ⛔ CRITICAL PATH
 
-1. Sign up at **https://www.twilio.com/try-twilio**
+**Stay on the free trial for now — do not upgrade yet.**
+
+1. Sign up at **https://www.twilio.com/try-twilio** — no card required
 2. Verify your email and your mobile number
-3. **Upgrade the account** (Console → top-right → Upgrade). Add ~$20. A trial account can only
-   call numbers you've verified, and it prepends a trial message — both are fatal here.
-4. Buy a **US local number** with **Voice** capability:
+3. Buy a **US local number** with **Voice** capability:
    Console → Phone Numbers → Buy a number → Country: United States → check **Voice** → Buy.
-   (~$1.15/month. Do **not** buy an Indian number — Twilio stopped supporting +91 numbers for
-   outbound in Aug 2024. Calling *into* India from a US number is the supported path.)
+   Free on trial. (Do **not** buy an Indian number — Twilio stopped supporting +91 numbers for
+   outbound in Aug 2024. Calling *into* India from a US number is the supported, consented path.)
+4. **Verify your own second number** as a caller ID so trial calls can actually reach it:
+   Console → Phone Numbers → Verified Caller IDs → Add a new number → enter your test
+   number → answer the call/read back the code. Takes under a minute, unlocks every
+   rehearsal call for free.
 5. From the Console dashboard copy:
    - `TWILIO_ACCOUNT_SID` (starts `AC…`)
    - `TWILIO_AUTH_TOKEN`
    - `TWILIO_PHONE_NUMBER` (the number you just bought, E.164 format e.g. `+15551234567`)
+
+The trial gives **75 free voice minutes** — plenty for the whole build. Its only two
+restrictions are (a) it can only call numbers you've verified, which is fine since every
+rehearsal targets your own number, and (b) it prepends a short disclaimer message, which
+doesn't matter for a test call to yourself. Neither restriction blocks anything before
+Phase 7. **The real call to 8688664337 is the one call that needs an unverified number** —
+that's the single moment we upgrade (Console → top-right → Upgrade, ~$20/₹1,700), right
+before we place it, not before.
 
 ## 2. Soniox — speech to text
 
