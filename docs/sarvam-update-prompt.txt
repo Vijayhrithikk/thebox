@@ -1,0 +1,41 @@
+Update the four tools (classify_lead, note_discovery, request_callback, and the on_end
+call-ended tool) as follows:
+
+1. Change every tool's webhook URL from the old ngrok address to the new production
+   domain, keeping the same path on each:
+   - classify_lead:    https://15-207-88-161.sslip.io/webhooks/classify
+   - note_discovery:   https://15-207-88-161.sslip.io/webhooks/discovery
+   - request_callback: https://15-207-88-161.sslip.io/webhooks/callback
+   - on_end (call ended): https://15-207-88-161.sslip.io/webhooks/call-ended
+
+2. Add this header to all four tools' HTTP config:
+   X-Webhook-Secret: 475fc5f9be36811499f56d340783af4d08bd98a6b2463932
+   (Requests without this header now get rejected with a 401 — this was added for
+   security since these webhooks trigger real WhatsApp sends and real scheduled calls.)
+
+3. If the on_end / call-ended tool doesn't exist yet, create it with lifecycle "on_end" so
+   it fires automatically once when the call finishes, POSTing to
+   https://15-207-88-161.sslip.io/webhooks/call-ended with this body, using whatever
+   variables you use elsewhere for the phone number and call summary/outcome:
+   {
+     "caller_number": "<the number being called>",
+     "session_id": "<call or conversation id>",
+     "classification": "<hot, warm, or cold>",
+     "call_summary": "<summary of what was discussed>",
+     "budget": "<budget mentioned, if any>",
+     "business_type": "<their business, if known>",
+     "product_count": "<product count, if known>",
+     "timeline": "<timeline mentioned, if any>",
+     "features": "<features they asked for, if any>",
+     "callback_requested": <true or false>,
+     "callback_time": "<what they said, if a callback was requested>"
+   }
+   This is what actually sends the full post-call follow-up (context + my number +
+   architecture image + resume) — it's a separate, required piece from the mid-call HOT
+   ping classify_lead already triggers.
+
+4. For all four tools: confirm which built-in variable holds the phone number being
+   called (the one you'd use for "caller_number" above) and use the exact same one
+   consistently across all four tool bodies — this was the one thing I couldn't confirm
+   from documentation alone, so double check it actually populates correctly rather than
+   coming through empty.

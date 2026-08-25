@@ -1,0 +1,41 @@
+{
+  "pronunciations": {
+    "te-IN": {
+      "e-commerce": "ఈ-కామర్స్",
+      "E-commerce": "ఈ-కామర్స్",
+      "website": "వెబ్‌సైట్",
+      "Website": "వెబ్‌సైట్",
+      "WhatsApp": "వాట్సాప్",
+      "checkout": "చెక్‌అవుట్",
+      "cart": "కార్ట్",
+      "payment gateway": "పేమెంట్ గేట్‌వే",
+      "payment": "పేమెంట్",
+      "product catalog": "ప్రొడక్ట్ కేటలాగ్",
+      "catalog": "కేటలాగ్",
+      "budget": "బడ్జెట్",
+      "callback": "కాల్‌బ్యాక్",
+      "inventory": "ఇన్వెంటరీ",
+      "multi-language": "మల్టీ-లాంగ్వేజ్",
+      "timeline": "టైమ్‌లైన్",
+      "discount": "డిస్కౌంట్",
+      "online": "ఆన్‌లైన్",
+      "delivery": "డెలివరీ",
+      "shipping": "షిప్పింగ్",
+      "app": "యాప్",
+      "team": "టీమ్",
+      "developer": "డెవలపర్",
+      "business": "బిజినెస్",
+      "customer": "కస్టమర్",
+      "order": "ఆర్డర్",
+      "Monish": "మోనిష్",
+      "Vijay": "విజయ్",
+      "Exotel": "ఎక్సోటెల్",
+      "Sarvam": "సర్వం"
+    },
+    "en-IN": {
+      "Monish": "Moh-nish",
+      "Vijay": "Vih-jay",
+      "Exotel": "Ex-oh-tel"
+    }
+  }
+}
