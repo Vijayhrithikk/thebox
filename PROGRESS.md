@@ -21,7 +21,7 @@ Target: not 60. The best submission they receive.
 
 | # | Criterion | Pts | Status |
 |---|-----------|-----|--------|
-| 1 | Calls & holds a conversation | 25 | 🟡 TTS (251ms TTFB) + brain (~2-3s first-sentence) proven live over text; phone hasn't rung yet |
+| 1 | Calls & holds a conversation | 25 | 🟡 Phone rings and connects for real; blocked on Twilio upgrade before the actual pipeline can be heard (see blockers) |
 | 2 | Language handling (TE/HI/EN + mixed) | 10 | 🟡 Telugu TTS audible and real; ASR/LLM code-complete, untested live |
 | 3 | Discovery quality | 10 | 🟡 tools + prompt written, untuned |
 | 4 | Intent classification from indirect answers | 15 | 🟡 Extraction path live-tested and working (correct warm/hot + evidence quotes); deterministic second path not started |
@@ -52,14 +52,26 @@ genuinely doesn't matter. TTS layer: `pnpm say` still measures 251ms time-to-fir
 Callback scheduling (`pnpm schedule`) also live-tested and correct — relative dates,
 festival anchors, ambiguous times all resolve right, after one prompt-tuning pass.
 
-**Deployment: pivoted from ngrok to Fly.io Mumbai.** Attempted ngrok as the fast free dev
-tunnel; its binary got flagged by Windows Defender as a virus (both the pre-installed copy
-and a fresh official download) — likely a false positive, but not something to bypass
-without asking. User chose to go straight to the real production path instead. Dockerfile
-and fly.toml are written and the build is smoke-tested locally (compiles, boots, passes
-/health) — blocked only on Monish completing Fly.io signup (requires a card; Fly dropped
-its free tier in 2024) and CLI auth. **No phone has rung yet — that's still the next real
-milestone**, and it's now one deployment away.
+**Deployment: ngrok recovered via a Microsoft Store install** (signed/vetted, sidesteps the
+Defender false-positive that blocked the WinGet copy and a fresh manual download) — tunnel
+came up clean, so we used it for the first live call instead of waiting on Fly.io.
+
+**First real phone call placed 2026-08-25. Result: real progress, real findings, no
+successful conversation yet — exactly what a first live test is for.** Phone rang, Monish
+answered, heard only Twilio's trial-account interstitial (an interactive "press any key"
+IVR prompt, not the passive disclaimer I'd assumed), pressed a key, call ended before our
+`<Connect><Stream>` ever ran — no Telugu greeting played. Root cause confirmed via Twilio's
+own call API (status: completed, duration: 13s — genuinely connected, just to the wrong
+thing) and a raw WebSocket test proving the tunnel/server/`/media` route all work correctly
+in isolation. Along the way found and fixed a real, separate bug: `/call-status` was
+hitting 415 (Fastify had no form-urlencoded parser registered), fixed with
+`@fastify/formbody`.
+
+**Correction to an earlier assumption** (see decisions table): the trial disclaimer isn't
+passive — it's interactive and blocks automation entirely, not just cosmetic. Upgrading is
+no longer deferrable to Phase 7; it blocks testing the core deliverable at all. Fly.io
+Dockerfile/fly.toml still ready and smoke-tested as the eventual production target, but the
+immediate next step is simpler: upgrade this Twilio account and retry on ngrok.
 
 ## WHAT'S DONE
 
@@ -95,28 +107,27 @@ milestone**, and it's now one deployment away.
 
 ## WHAT'S NEXT
 
-1. Monish signs up for Fly.io (card required — see decisions table) and authenticates the
-   CLI (`flyctl auth login`) -> `fly launch` + `fly deploy` from repo root against
-   `apps/voice-server/fly.toml` (Dockerfile + fly.toml already written, build already
-   smoke-tested: compiles, boots, passes /health) -> first-ever live `pnpm call` to
-   TEST_PHONE. This is the real milestone: TTS and brain are separately proven over
-   text/audio, but nothing has confirmed the full ASR -> brain -> TTS loop holds up on an
-   actual phone line yet.
+1. **Decision needed from Monish: upgrade Twilio now (~₹1,700).** No longer deferrable —
+   the trial's interactive disclaimer blocks testing the core deliverable, confirmed by
+   the first live call attempt (see decisions table). Once upgraded: retry `pnpm call` to
+   TEST_PHONE over the already-working ngrok tunnel. This is the real milestone: TTS and
+   brain are separately proven over text/audio, but nothing has confirmed the full
+   ASR -> brain -> TTS loop holds up on an actual phone line yet.
 2. Phase 3: build the deterministic signal scorer as the second, non-LLM path to
    Hot/Warm/Cold (the LLM-only extraction path already works — this is the redundancy
    the plan calls for so the 15-pt mid-call requirement can't fail on one missed call)
 3. Phase 4: wire real WhatsApp dispatch behind the same ActionSink interface the console
    sink already proves out; wire the callback resolver's output into an actual re-dial
-4. Phase 7 only: Twilio account upgrade (~₹1,700) — the single moment real money is
-   spent, right before the real call to 8688664337 (see decisions table)
+4. Fly.io Mumbai deployment (Dockerfile/fly.toml ready, smoke-tested) once we're closer to
+   the real call — needed for production reliability, not blocking further dev testing
+   now that ngrok is working
 
 ## OPEN BLOCKERS
 
-- ⛔ No phone has actually rung yet — needs Fly.io deployed (Dockerfile/fly.toml ready,
-  blocked on Monish's Fly.io signup + card, and CLI auth)
+- ⛔ **Twilio still on trial — now confirmed to block all live testing, not just the final
+  call.** Upgrading (~₹1,700, reimbursed) is the next real decision point.
 - ⛔ DATABASE_URL still a placeholder — needed for Phase 4 callback persistence, not before
 - ⛔ Resume PDF still needed
-- ⛔ Twilio account still on trial (by design — see decisions table) — fine until Phase 7
 
 ---
 
@@ -126,7 +137,8 @@ milestone**, and it's now one deployment away.
 |---|---|---|
 | Custom orchestrator over Twilio Media Streams, not Vapi/Retell | We own the turn loop, so mid-call WhatsApp timing is provable and barge-in is tunable | Managed platforms make the 15-pt mid-call requirement a black box and every submission looks identical |
 | Twilio (US number) for telephony | Only Tier-1 provider permitting India outbound without an Indian-entity KYC. Twilio dropped India (+91) numbers Aug 2024 but calling *to* Indian mobiles from a non-India number is explicitly permitted with recipient consent — which the brief itself grants | Exotel/Ozonetel need GST + business KYC. Plivo viable, kept as documented fallback |
-| Twilio **trial** account through Phase 6; upgrade (~₹1,700) deferred to Phase 7 only | Trial gives 75 free voice minutes with no card, enough for every rehearsal — restricted only to *verified* numbers, and every rehearsal targets our own verified test number. The recruiter's number is the one call that needs an unverified line, so that's the only moment upgrading matters | Checked Plivo (min. upgrade $25, worse), Vonage, Telnyx — every legitimate provider gates unrestricted outbound behind a paid upgrade as anti-fraud regulation, not a Twilio-specific cost. Provider-shopping doesn't find cheaper |
+| ~~Twilio **trial** account through Phase 6~~ — **superseded, see row below** | ~~Trial gives 75 free voice minutes, restricted only to verified numbers, every rehearsal targets our own verified number~~ | This assumed the trial disclaimer was a passive announcement. It isn't — see the correction below |
+| **Correction, live-tested 2026-08-25:** Twilio trial's disclaimer is an *interactive* IVR prompt ("press any key to accept"), not a passive message — it blocks our TwiML from ever executing until a human presses a key, then the call ends before `<Connect><Stream>` runs. First real call attempt: phone rang, Monish answered, heard only the English Twilio trial prompt, pressed a key, call ended — our Telugu greeting never played, `/media` never saw a connection. Upgrading is no longer a Phase-7-only decision — it blocks testing the core deliverable at all, not just the final call | The original assumption (verified above, wrong) was that the trial's only two restrictions were "verified numbers only" and "a passive disclaimer," neither blocking rehearsal. Live testing is what caught this — the assumption was reasonable but incomplete, and only a real call surfaced the gap | Would have kept assuming trial was fine for all rehearsals and only discovered this blocker later, closer to the real call, with less runway to react |
 | Rejected: physical GSM module / SIM800 or spare-Android-phone telephony bridge | Would mean discarding an already-working, typechecked Twilio WebSocket integration to hand-solder analog audio lines (module) or fight Android's OS-level restrictions on live call-audio access (phone), plus rebuilding ring/answer/hangup detection that Twilio gives for free via webhooks | Real zero-recurring-cost path, and legitimate — but the incremental saving is only the ₹1,700 already deferred to the last step, for genuine multi-day hardware/audio-debugging risk on a tight timeline. Decided with the user 2026-08-25 |
 | Soniox for ASR | 8.2% Telugu WER vs Google's 37%. True streaming, automatic language ID, mid-sentence Telugu↔English code-switching with zero config | Deepgram has no real Telugu. Whisper is not streaming |
 | Sarvam Bulbul v3 for TTS | Native Telugu with Tenglish code-switching, sub-250ms TTFB, Indian female voice (the brief says female lands better on outbound here), ₹30/10k chars | ElevenLabs is fine but not natively Tenglish; kept as fallback |
@@ -142,6 +154,7 @@ milestone**, and it's now one deployment away.
 | Callback resolution via a single-tool LLM call (`callbackResolver.ts`), not a date-parsing library | "After Diwali" needs calendar knowledge no date library has, and open-ended Indian-English phrasing ("next Monday around 6", "sometime, I'll let you know") doesn't fit a fixed grammar. Live-tested: correctly computed "next Monday" from the actual current date, resolved "around 6" to an approximate evening time, and correctly distinguished a real-but-vague anchor ("after Diwali") from a genuinely unusable one ("sometime") — after one prompt-tuning pass caught the model being too conservative and declining to resolve the Diwali case at all on the first try | A hand-rolled parser would need to encode Indian festival dates and open-ended phrasing rules by hand, and would still fail on phrasing nobody thought to test for |
 | Fly.io Mumbai deployment instead of an ngrok dev tunnel | Attempted ngrok first (free, fastest path to a public wss:// endpoint). Its binary — both the pre-installed WinGet copy trying to self-update, and a fresh official download — got flagged and blocked by Windows Defender as a virus. Very likely a false positive, but silently bypassing antivirus on the user's machine isn't a call to make unilaterally; asked, and the user chose to skip it rather than touch Defender settings. Fly.io was always the real production target anyway (Mumbai region, closest to Indian carriers and Sarvam) — this just means we build it now instead of in Phase 6/7 | Fly.io dropped its card-free tier in 2024 — this is real, small, ongoing cost (a few $/month for one always-on shared-cpu-1x instance), not deferred like Twilio's one-time upgrade. Flagged clearly to the user given how much of this session was about avoiding upfront spend — this one genuinely can't be avoided if we need a live endpoint |
 | Fly deployment kept `min_machines_running = 1`, `auto_stop_machines = "off"` | A cold-started machine adds real latency right when a call connects — directly hostile to the turn-latency budget we just spent this whole session cutting from 6-10s to 2-3s. Keeping one instance always warm is a small cost for guaranteeing the connection is live and fast the instant Twilio dials in | Fly's default auto-stop-on-idle is the cheaper choice for most apps, but wrong for a voice agent scored on responsiveness |
+| Registered `@fastify/formbody` for `/call-status` | Found on the very first live call attempt: Twilio POSTs its status callback as `application/x-www-form-urlencoded`, which Fastify has no parser for by default — every callback was hitting a 415 before it ever reached our handler. Not fatal to the call itself (Twilio just logs a warning and moves on), but it meant zero visibility into real call-status transitions (ringing/answered/completed) during exactly the debugging session that needed them most | Only discoverable by actually placing a call — no amount of unit testing or code review surfaces a missing content-type parser for a webhook you've never received live |
 | Mid-conversation system messages for live state | Opus 5 accepts `role:"system"` inside `messages[]`, so we inject elapsed time / intent score / "WhatsApp already sent" without invalidating the cached prefix | Rebuilding the system prompt each turn would cold-cache every turn |
 | Dual-path intent detection | A deterministic signal scorer runs in parallel with the LLM; whichever crosses the threshold first fires the WhatsApp | Sole reliance on an LLM tool call means one missed call = 15 points gone |
 | Fly.io `bom` (Mumbai) | Physically closest region to Indian carriers and to Sarvam. Every ms of RTT is scored under "latency kills the conversation" | Vercel can't hold long-lived WebSockets; US regions add ~200ms round trip |

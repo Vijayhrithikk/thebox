@@ -1,5 +1,6 @@
 import Fastify from "fastify";
 import websocket from "@fastify/websocket";
+import formbody from "@fastify/formbody";
 import { env } from "./config.js";
 import { CallSession } from "./call/session.js";
 import { assertProviderConfigured } from "./brain/providers/index.js";
@@ -14,6 +15,10 @@ const app = Fastify({
 });
 
 await app.register(websocket);
+// Twilio's status callbacks POST application/x-www-form-urlencoded, which
+// Fastify has no parser for by default — every /call-status hit 415 until
+// this was added, discovered on the very first live call attempt.
+await app.register(formbody);
 
 app.get("/health", async () => ({ ok: true, at: new Date().toISOString() }));
 
