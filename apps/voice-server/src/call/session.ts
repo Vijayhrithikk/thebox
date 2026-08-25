@@ -6,8 +6,9 @@ import { mulawToPcm16 } from "./audio.js";
 import { SonioxStream } from "../providers/soniox.js";
 import { SarvamVoice, type Language } from "../providers/sarvam.js";
 import { Agent, type StopReason } from "../brain/agent.js";
-import { ConsoleActionSink } from "../brain/tools.js";
-import { createLiveProvider } from "../brain/providers/index.js";
+import { ConsoleActionSink, type ActionSink } from "../brain/tools.js";
+import { extractSignals } from "../brain/signalExtractor.js";
+import { createLiveProvider, type LLMProvider } from "../brain/providers/index.js";
 
 /** Soniox's 2-letter codes → Sarvam's locale codes. Unknown stays on whatever we were already speaking. */
 function toSarvamLanguage(code: string | undefined, fallback: Language): Language {
@@ -39,6 +40,9 @@ export class CallSession {
   private readonly agent: Agent;
   /** One WebSocket per call, opened once — see providers/sarvam.ts for why that matters. */
   private readonly voice: SarvamVoice;
+  /** Separate provider instance for signalExtractor.ts — a distinct concurrent call per turn, never awaited by the spoken reply. */
+  private readonly extractionProvider: LLMProvider;
+  private readonly sink: ActionSink;
 
   private turnBuffer = "";
   private silenceTimer: NodeJS.Timeout | null = null;
@@ -55,10 +59,9 @@ export class CallSession {
   ) {
     this.out = new OutboundAudio(socket, streamSid);
     this.voice = new SarvamVoice(this.currentLanguage);
-    this.agent = new Agent(
-      createLiveProvider(),
-      new ConsoleActionSink((obj, msg) => this.log.info({ sessionId, ...obj as object }, msg)),
-    );
+    this.agent = new Agent(createLiveProvider());
+    this.extractionProvider = createLiveProvider();
+    this.sink = new ConsoleActionSink((obj, msg) => this.log.info({ sessionId, ...obj as object }, msg));
     this.wireAsr();
   }
 
@@ -122,6 +125,12 @@ export class CallSession {
 
     const startedAt = performance.now();
     this.log.info({ sessionId: this.sessionId, utterance }, "turn start");
+
+    // Fires concurrently, never awaited here — extraction latency must never
+    // show up as a delay in what the caller hears. See signalExtractor.ts.
+    void extractSignals(utterance, this.extractionProvider, this.sink).catch((err) => {
+      this.log.error({ err, sessionId: this.sessionId, utterance }, "signal extraction failed");
+    });
 
     let stopReason: StopReason;
     try {

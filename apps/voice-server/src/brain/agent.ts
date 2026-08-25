@@ -1,28 +1,35 @@
 import { buildSystemPrompt } from "./prompt.js";
-import { toolDefinitions, handleToolCall, type ActionSink } from "./tools.js";
 import type { LLMProvider, StopReason, Turn } from "./providers/types.js";
-
-const MAX_TOOL_ROUNDTRIPS = 4;
 
 export type { StopReason } from "./providers/types.js";
 
 /**
  * One conversation's worth of state, provider-agnostic.
  *
- * This class owns *only* the turn loop, tool dispatch, and barge-in abort —
- * nothing here knows whether it's talking to Claude or DeepSeek. That split
- * is deliberate: which model answers is a config choice (LLM_PROVIDER), not
- * an architecture choice, so swapping providers touches zero lines here.
+ * Deliberately never sends tools on the live path. Measured live (not
+ * assumed): the moment a turn includes tool schemas, both DeepSeek V4 Pro
+ * and V4 Flash produce a tool-only response with zero spoken text, forcing
+ * a second sequential API round trip before any audio can start — 6.4s and
+ * 3.6s to first sentence respectively, both well past the "three seconds
+ * and the conversation is dead" bar from the brief. A prompt instruction
+ * asking the model to speak *and* call tools in the same turn had no
+ * effect — this is how the API's tool-calling shape behaves, not a
+ * preference a system prompt can override.
+ *
+ * So the live agent's only job is to talk: exactly one streamTurn call per
+ * turn, tools always empty, guaranteeing first-sentence latency is bounded
+ * by one model call, not two. Classification, discovery notes, and
+ * callback scheduling all happen in signalExtractor.ts instead — a
+ * parallel side-channel that reads the same transcript but never blocks
+ * the spoken reply. See PROGRESS.md decisions table for the measured
+ * before/after.
  */
 export class Agent {
   private history: Turn[] = [];
   private readonly systemPrompt = buildSystemPrompt();
   private currentAbort: AbortController | null = null;
 
-  constructor(
-    private readonly provider: LLMProvider,
-    private readonly sink: ActionSink,
-  ) {}
+  constructor(private readonly provider: LLMProvider) {}
 
   /**
    * Called on barge-in. Aborts the in-flight request so we stop generating
@@ -38,51 +45,27 @@ export class Agent {
     this.history.push({ role: "system", text });
   }
 
-  /**
-   * Runs one full exchange: sends the caller's turn, streams the reply
-   * sentence-by-sentence via onSentence, transparently resolves any tool
-   * calls, and keeps looping until the model actually stops talking.
-   */
+  /** Sends the caller's turn, streams the reply sentence-by-sentence via onSentence, returns why it stopped. */
   async respond(userText: string, onSentence: (text: string) => void): Promise<StopReason> {
     this.history.push({ role: "user", text: userText });
+    this.currentAbort = new AbortController();
 
-    for (let round = 0; round < MAX_TOOL_ROUNDTRIPS; round++) {
-      this.currentAbort = new AbortController();
-      let result: Awaited<ReturnType<LLMProvider["streamTurn"]>>;
-      try {
-        result = await this.provider.streamTurn({
-          systemPrompt: this.systemPrompt,
-          history: this.history,
-          tools: toolDefinitions,
-          onSentence,
-          signal: this.currentAbort.signal,
-        });
-      } catch (err) {
-        if (isAbortError(err)) return "interrupted";
-        throw err;
-      } finally {
-        this.currentAbort = null;
-      }
-
-      this.history.push({ role: "assistant", text: result.text, toolCalls: result.toolCalls });
-
-      if (result.stopReason !== "tool_use") {
-        return result.stopReason;
-      }
-
-      // Fire-and-forget: the sink dispatches real side effects async and we
-      // hand back an immediate ack, so this round-trip is model-API-only
-      // latency — never the WhatsApp/DB call's latency.
-      this.history.push({
-        role: "user",
-        toolResults: result.toolCalls.map((tc) => ({
-          id: tc.id,
-          output: handleToolCall(tc.name, tc.input, this.sink),
-        })),
+    try {
+      const result = await this.provider.streamTurn({
+        systemPrompt: this.systemPrompt,
+        history: this.history,
+        tools: [],
+        onSentence,
+        signal: this.currentAbort.signal,
       });
+      this.history.push({ role: "assistant", text: result.text });
+      return result.stopReason;
+    } catch (err) {
+      if (isAbortError(err)) return "interrupted";
+      throw err;
+    } finally {
+      this.currentAbort = null;
     }
-
-    return "end_turn";
   }
 }
 

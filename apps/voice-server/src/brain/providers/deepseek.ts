@@ -17,31 +17,43 @@ const client = new OpenAI({
 });
 
 /**
- * DeepSeek V4 Pro over its OpenAI-compatible endpoint.
+ * DeepSeek over its OpenAI-compatible endpoint.
  *
- * `reasoning_effort` is the DeepSeek analogue of Claude's `effort`, but the
- * latency curve is not comparable: at "high"/"max" the flagship model has
- * been independently benchmarked at 12-30 SECONDS to first answer token —
- * completely disqualifying for a live phone call, where >1.2s already
- * breaks the conversation per the brief. This provider hard-codes "low"
- * (DeepSeek's non-thinking mode) for every in-call turn regardless of what
- * DEEPSEEK_REASONING_EFFORT is set to elsewhere, and only honours a higher
- * setting when explicitly asked for an offline/post-call composition via
- * `forceReasoningEffort`. Getting this wrong doesn't degrade gracefully —
- * it silently turns every turn into a 15+ second dead-air hang.
+ * Two latency guards, both found by live measurement, not assumption:
+ *
+ * 1. `reasoning_effort` is the DeepSeek analogue of Claude's `effort`, but
+ *    the curve isn't comparable — at "high"/"max" the flagship has been
+ *    independently benchmarked at 12-30s to first token. Hard-coded to
+ *    "low" for every in-call turn regardless of what's configured
+ *    elsewhere, overridable only via `forceReasoningEffort` for offline use.
+ *
+ * 2. The flagship (`deepseek-v4-pro`) is simply a much slower *model*, not
+ *    just a slower setting — measured at ~10s to first token even for a
+ *    plain conversational turn with zero tools involved, roughly 5x
+ *    `deepseek-v4-flash` on the identical prompt. It also showed weaker
+ *    tool-schema adherence in testing (inventing its own JSON keys instead
+ *    of following the declared schema). So the live path is hard-coded to
+ *    `deepseek-v4-flash` via `forceModel`, independent of `DEEPSEEK_MODEL`
+ *    — that env var is reserved for the offline/deep-reasoning path
+ *    (createDeepReasoningProvider), where v4-pro's slowness genuinely
+ *    doesn't matter and its extra quality can help.
  */
 export class DeepSeekProvider implements LLMProvider {
   readonly name = "deepseek";
 
-  constructor(private readonly forceReasoningEffort?: "low" | "high" | "max") {}
+  constructor(
+    private readonly forceReasoningEffort?: "low" | "high" | "max",
+    private readonly forceModel?: string,
+  ) {}
 
   async streamTurn(params: StreamTurnParams): Promise<StreamTurnResult> {
     const { systemPrompt, history, tools, onSentence, signal } = params;
     const effort = this.forceReasoningEffort ?? "low";
+    const model = this.forceModel ?? env.DEEPSEEK_MODEL;
 
     const stream = await client.chat.completions.create(
       {
-        model: env.DEEPSEEK_MODEL,
+        model,
         stream: true,
         messages: [{ role: "system", content: systemPrompt }, ...toOpenAiMessages(history)],
         tools: tools.length > 0 ? tools.map(toOpenAiTool) : undefined,

@@ -21,10 +21,10 @@ Target: not 60. The best submission they receive.
 
 | # | Criterion | Pts | Status |
 |---|-----------|-----|--------|
-| 1 | Calls & holds a conversation | 25 | 🟡 TTS layer proven live (251ms TTFB); phone hasn't rung yet |
+| 1 | Calls & holds a conversation | 25 | 🟡 TTS (251ms TTFB) + brain (~2-3s first-sentence) proven live over text; phone hasn't rung yet |
 | 2 | Language handling (TE/HI/EN + mixed) | 10 | 🟡 Telugu TTS audible and real; ASR/LLM code-complete, untested live |
 | 3 | Discovery quality | 10 | 🟡 tools + prompt written, untuned |
-| 4 | Intent classification from indirect answers | 15 | 🟡 LLM path written; deterministic scorer not started |
+| 4 | Intent classification from indirect answers | 15 | 🟡 Extraction path live-tested and working (correct warm/hot + evidence quotes); deterministic second path not started |
 | 5 | Mid-call WhatsApp action | 15 | ⬜ not started (Phase 4) |
 | 6 | Callback scheduling from speech | 10 | 🟡 tool captures raw phrase; resolver not built |
 | 7 | Follow-up + WhatsApp quality | 10 | ⬜ not started (Phase 4) |
@@ -34,12 +34,22 @@ Target: not 60. The best submission they receive.
 
 ## CURRENT STATE
 
-**First real audio out of the pipeline, measured, not simulated.** Twilio, Soniox, and
-Sarvam are live credentials now (Monish). `pnpm say` — the offline TTS diagnostic — ran
-against the actual streaming path and returned **251ms time-to-first-byte** (down from
-1693ms on the batch REST endpoint before the rewrite — see decisions table). DeepSeek key
-still missing, so the live-call path isn't testable yet; the TTS-only path is proven.
-Still no phone has actually rung — that's the next real milestone, not this one.
+**The brain is now proven live too, and a real latency bug was found and fixed by testing,
+not assumed.** All four credentials landed (Twilio, Soniox, Sarvam, DeepSeek). `pnpm chat`
+— the offline brain diagnostic — surfaced that giving the live conversational turn tool
+access (classify_lead/note_discovery/request_callback) made DeepSeek go completely silent
+for a full extra API round trip before speaking a word: **6.4s** first-sentence on the
+flagship, **3.6s** even on the fast model — both blowing past the brief's explicit "three
+seconds and the conversation is dead" bar. Fixed architecturally: the live agent now never
+sees tools at all (guaranteeing exactly one API call per turn), and all tool-calling moved
+to a separate parallel side-channel (`signalExtractor.ts`) that reads the same transcript
+without ever blocking the spoken reply. Re-measured: **~2-3s** first-sentence, consistent
+across four runs. Also found the flagship (`deepseek-v4-pro`) is ~5x slower than
+`deepseek-v4-flash` even with tools removed, and showed weaker JSON-schema adherence on
+tool calls — so the live path is now hard-coded to flash regardless of `DEEPSEEK_MODEL`,
+with the flagship reserved for the offline post-call composition where its slowness
+genuinely doesn't matter. TTS layer: `pnpm say` still measures 251ms time-to-first-byte.
+**No phone has rung yet — that's still the next real milestone.**
 
 ## WHAT'S DONE
 
@@ -109,6 +119,8 @@ Still no phone has actually rung — that's the next real milestone, not this on
 | Provider API keys removed from config.ts's eager schema; moved to `assertProviderConfigured()` in brain/providers/index.ts, called once at server.ts boot | The global env schema was blocking `say.ts` — a pure TTS diagnostic — on a DeepSeek key it never uses, just because both modules imported the same monolithic config. Moved the check to point of use instead: standalone scripts stay unblocked, the real server still fails at boot, not mid-call | Telling the user to paste a fake key to unblock testing would have been a workaround for a real coupling bug, not a fix |
 | Empty-string env vars (`KEY=`) stripped before Zod validation | dotenv parses an unset `KEY=` as `""`, not `undefined` — Zod's `.optional()` only treats `undefined` as absent, so `ANTHROPIC_API_KEY=` failed its own `.min(5)` check even though it was correctly meant to be "not set". Caught live: this blocked the first real `pnpm say` run | A one-line default anyone editing `.env` would trip over otherwise |
 | Sarvam TTS: persistent streaming WebSocket per call, not one REST POST per sentence | First live test measured 1693ms time-to-first-byte on the batch endpoint — each sentence paid a fresh TLS handshake plus waited for the *entire* clip before any audio was usable. Rewrote against the official `sarvamai` SDK's streaming client, one socket opened per call and reused for every sentence. Re-measured: **251ms**, a 6.7x cut, matching Sarvam's own advertised streaming latency. Also requests `output_audio_codec:"mulaw"` + `speech_sample_rate:8000` directly, so Sarvam's output needs zero conversion before hitting Twilio | Would have shipped the 1.7s version if `pnpm say` hadn't been run against real credentials before wiring it into the live call path — validated by measurement, not assumption |
+| Live conversational turn never sends tools; classify/discovery/callback moved to a parallel `signalExtractor.ts` side-channel | Live-measured: the moment the live turn included tool schemas, DeepSeek produced a silent tool-only response with zero spoken text every time, forcing a second sequential API round trip before any audio could start — 6.4s (flagship) and 3.6s (flash) to first sentence, both past the brief's "three seconds and the conversation is dead" bar. A prompt instruction telling it to speak *and* call tools together had zero measured effect — this is how the API's tool-calling shape behaves, not a promptable preference. Splitting extraction into its own concurrent, never-awaited call cut first-sentence latency to ~2-3s, consistent across four runs, while classification/discovery still land correctly (verified: budget/timeline/business extracted, correct hot/warm/cold with real evidence quotes) | Tried the cheap fix first (a prompt instruction) and measured that it didn't work before reaching for the architectural one — this is also the exact "deterministic path runs in parallel with the LLM" design the plan already committed to for intent classification; live testing just proved it wasn't optional or Phase-3-only |
+| DeepSeek live path hard-coded to `deepseek-v4-flash`, never `DEEPSEEK_MODEL`; flagship (`deepseek-v4-pro`) reserved for `createDeepReasoningProvider()` | Even with tools stripped from the live turn, the flagship measured ~10s to first token on a plain conversational reply — roughly 5x flash on the identical prompt — and showed weaker JSON-schema adherence on tool calls in the extractor (invented its own key names instead of following the declared schema). Flash is fast enough to hold a conversation; the flagship's quality is real but only usable where nobody's waiting on the line | Matches what "flagship" was actually asked for: use it, but only where its slowness is invisible — the post-call WhatsApp follow-up (Phase 4), not the live call |
 | Mid-conversation system messages for live state | Opus 5 accepts `role:"system"` inside `messages[]`, so we inject elapsed time / intent score / "WhatsApp already sent" without invalidating the cached prefix | Rebuilding the system prompt each turn would cold-cache every turn |
 | Dual-path intent detection | A deterministic signal scorer runs in parallel with the LLM; whichever crosses the threshold first fires the WhatsApp | Sole reliance on an LLM tool call means one missed call = 15 points gone |
 | Fly.io `bom` (Mumbai) | Physically closest region to Indian carriers and to Sarvam. Every ms of RTT is scored under "latency kills the conversation" | Vercel can't hold long-lived WebSockets; US regions add ~200ms round trip |

@@ -30,7 +30,10 @@ export function createLiveProvider(): LLMProvider {
   assertProviderConfigured();
   switch (env.LLM_PROVIDER) {
     case "deepseek":
-      return new DeepSeekProvider("low"); // never higher — see deepseek.ts for why
+      // Both args are hard-coded, not read from config — "low" effort and
+      // "flash" (never the flagship) for the live path. See deepseek.ts for
+      // the measured numbers behind both.
+      return new DeepSeekProvider("low", "deepseek-v4-flash");
     case "anthropic":
     default:
       return new AnthropicProvider();

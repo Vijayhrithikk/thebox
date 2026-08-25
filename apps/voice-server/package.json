@@ -9,7 +9,8 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "call": "tsx src/scripts/call.ts",
-    "say": "tsx src/scripts/say.ts"
+    "say": "tsx src/scripts/say.ts",
+    "chat": "tsx src/scripts/chat.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.120.0",
