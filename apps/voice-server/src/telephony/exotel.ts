@@ -31,6 +31,15 @@ export interface PlaceCallOptions {
  * the call; the actual conversation happens entirely inside Sarvam.
  */
 export async function placeCall({ to, sessionId }: PlaceCallOptions) {
+  // Callers (telephony/index.ts) already check isTelephonyConfigured()
+  // before reaching here — these fields are legitimately optional at the
+  // schema level now, since a live install may run with no Exotel
+  // credentials at all, but by the time this function runs they're known
+  // to be set.
+  if (!env.EXOTEL_EXOPHONE || !env.EXOTEL_SID || !env.EXOTEL_APP_ID) {
+    throw new Error("EXOTEL_EXOPHONE/EXOTEL_SID/EXOTEL_APP_ID required to place a call");
+  }
+
   const body = new URLSearchParams({
     From: to,
     CallerId: env.EXOTEL_EXOPHONE,

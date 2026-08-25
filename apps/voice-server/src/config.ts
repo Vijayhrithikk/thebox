@@ -14,24 +14,31 @@ for (const key of Object.keys(process.env)) {
 }
 
 /**
- * Scoped to exactly what this server does now: Exotel (telephony, only for
- * the callback re-dial — the primary call runs entirely inside Sarvam's
- * Voice Agent), a single LLM (DeepSeek, used only by callbackResolver.ts to
- * turn spoken time into a datetime), WhatsApp (Baileys), and the two files
- * that go out in the post-call follow-up. Twilio, Telnyx, Soniox, our own
- * Sarvam TTS streaming, and Anthropic were all real, working code earlier in
- * this project — removed once Sarvam's managed agent took over the entire
- * live call, since none of it does anything anymore. See PROGRESS.md for
- * that history; it's not lost, just not live.
+ * Scoped to exactly what this server does now: a single LLM (DeepSeek, used
+ * only by callbackResolver.ts to turn spoken time into a datetime, and by
+ * followup.ts to compose the post-call message), WhatsApp (Baileys), and
+ * the two files that go out in the post-call follow-up. Twilio, Telnyx,
+ * Soniox, our own Sarvam TTS streaming, and Anthropic were all real,
+ * working code earlier in this project — removed once Sarvam's managed
+ * agent took over the entire live call. See PROGRESS.md for that history;
+ * it's not lost, just not live.
+ *
+ * Exotel is now fully optional, not removed outright — it was the
+ * telephony this server used only for the scheduled-callback re-dial, and
+ * the number since moved to a Sarvam-rented number (Sarvam's own dialing
+ * exposed no confirmed single-call API to switch the re-dial to). If these
+ * are unset, callbackScheduler.ts still resolves and records the
+ * requested time, it just can't place the re-dial itself — see its
+ * comment for exactly what degrades.
  */
 const schema = z.object({
-  EXOTEL_SID: z.string().min(1),
-  EXOTEL_API_KEY: z.string().min(5),
-  EXOTEL_API_TOKEN: z.string().min(5),
+  EXOTEL_SID: z.string().optional(),
+  EXOTEL_API_KEY: z.string().min(5).optional(),
+  EXOTEL_API_TOKEN: z.string().min(5).optional(),
   /** The ExoPhone number, domestic format (e.g. "08047280713") — Exotel doesn't use E.164 here. */
-  EXOTEL_EXOPHONE: z.string().min(1),
+  EXOTEL_EXOPHONE: z.string().optional(),
   /** App Bazaar flow ID — its Voicebot Applet now points at Sarvam, not at this server, so dialing through it (re-dials included) reaches the same Sarvam agent as the original call. */
-  EXOTEL_APP_ID: z.string().min(1),
+  EXOTEL_APP_ID: z.string().optional(),
 
   DEEPSEEK_API_KEY: z.string().min(5),
   /** deepseek-chat / deepseek-reasoner retired 2026-07-24 — this is the current flagship. Only used for the low-volume callback-time resolution call. */

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { resolveCallbackTime } from "./callbackResolver.js";
 import type { LLMProvider } from "./providers/types.js";
-import { placeCall } from "../telephony/index.js";
+import { placeCall, isTelephonyConfigured } from "../telephony/index.js";
 
 /**
  * Turns a resolved callback time into an actual future call — the part of
@@ -12,15 +12,16 @@ import { placeCall } from "../telephony/index.js";
  * Postgres before this survives a restart or scales past one process, which
  * is exactly what DATABASE_URL is reserved for.
  *
- * Takes the destination number directly rather than looking it up from a
- * sessionId — telephony/index.ts's sessionId->number map only gets
- * populated by calls this process places itself, and once Sarvam's voice
- * agent is placing the primary call (see webhooks in server.ts), that map
- * is empty for calls it originates. The re-dial itself still goes through
- * our own Exotel adapter (placeCall below), not Sarvam — Sarvam's outbound
- * calling is portal/campaign-driven with no API found yet for placing one
- * ad-hoc call, so the callback re-dial keeps using the pipeline we already
- * have working rather than blocking on that.
+ * The re-dial itself goes through Exotel's API (placeCall below), not
+ * Sarvam — Sarvam's outbound calling is portal/campaign-driven with no
+ * confirmed API for placing one ad-hoc call. That path is now optional,
+ * not required: the number moved from an Exotel-connected ExoPhone to a
+ * Sarvam-rented number (Exotel's "connect two numbers" bridging mode hit a
+ * real bug in Sarvam's campaign dialer — see PROGRESS.md), so a live
+ * install may have no Exotel credentials at all. When that's the case,
+ * time resolution and logging below still happen — only the automatic
+ * re-dial itself is skipped, with a clear log line saying so, rather than
+ * either crashing at boot or silently doing nothing.
  */
 export interface ScheduledCallback {
   to: string;
@@ -61,13 +62,20 @@ export async function scheduleCallbackFromSpeech(
 
   setTimeout(() => {
     scheduled.delete(callbackId);
+    if (!isTelephonyConfigured()) {
+      log({ to, at }, "callback time reached but no telephony configured — re-dial NOT placed, needs manual follow-up");
+      return;
+    }
     log({ to, at }, "firing scheduled callback");
     placeCall({ to, sessionId: randomUUID() }).catch((err) => {
       log({ err, to }, "scheduled callback failed to place");
     });
   }, delayMs);
 
-  log({ to, at, confidence: resolution.confidence }, "callback scheduled");
+  log(
+    { to, at, confidence: resolution.confidence, autoRedial: isTelephonyConfigured() },
+    "callback scheduled",
+  );
 }
 
 /** For the eventual console view — what's currently queued, in memory, right now. */

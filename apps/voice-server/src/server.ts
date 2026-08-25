@@ -1,7 +1,7 @@
 import Fastify from "fastify";
 import { env } from "./config.js";
 import { assertProviderConfigured, createLiveProvider, createDeepReasoningProvider } from "./brain/providers/index.js";
-import { assertTelephonyConfigured } from "./telephony/index.js";
+import { isTelephonyConfigured } from "./telephony/index.js";
 import { initWhatsApp, sendWhatsApp } from "./actions/whatsapp.js";
 import { sendFollowUp, type CallOutcome } from "./actions/followup.js";
 import { scheduleCallbackFromSpeech } from "./brain/callbackScheduler.js";
@@ -10,14 +10,20 @@ import { CONSOLE_HTML } from "./console.js";
 
 /**
  * This server no longer runs the live call — Sarvam's Voice Agent does,
- * with its own STT, LLM, and TTS. What's left here is the action backend
- * Sarvam's tools call mid-call and at call end (see docs/sarvam-agent-*
- * for the portal setup this pairs with), a monitoring console, and a small
- * in-memory event feed backing it. See PROGRESS.md for why the pipeline
- * that used to live in this file was removed.
+ * with its own STT, LLM, and TTS, dialing out from a Sarvam-rented number
+ * (Exotel was tried first, hit a bridging bug in Sarvam's campaign dialer,
+ * and was dropped in favor of Sarvam's own number). What's left here is
+ * the action backend Sarvam's tools call mid-call and at call end (see
+ * docs/sarvam-agent-* for the portal setup this pairs with), a monitoring
+ * console, and a small in-memory event feed backing it. See PROGRESS.md
+ * for why the pipeline that used to live in this file was removed.
  */
 assertProviderConfigured();
-assertTelephonyConfigured();
+if (!isTelephonyConfigured()) {
+  console.warn(
+    "EXOTEL_* not configured — the scheduled-callback re-dial is disabled; request_callback will still resolve and log the requested time, it just won't place the call itself.",
+  );
+}
 
 const app = Fastify({
   logger: { level: env.LOG_LEVEL, transport: { target: "pino-pretty" } },
