@@ -21,8 +21,8 @@ Target: not 60. The best submission they receive.
 
 | # | Criterion | Pts | Status |
 |---|-----------|-----|--------|
-| 1 | Calls & holds a conversation | 25 | 🟡 Phone rings and connects for real (Twilio); full pipeline unheard live — blocked on Telnyx account clearing payment review (see blockers) |
-| 2 | Language handling (TE/HI/EN + mixed) | 10 | 🟡 Telugu TTS audible and real; ASR/LLM code-complete, untested live |
+| 1 | Calls & holds a conversation | 25 | 🟢 **First full live call confirmed 2026-08-25** (Exotel): phone rang, real Telugu greeting heard on pickup. Delivery quality needs a real refinement pass — see current state |
+| 2 | Language handling (TE/HI/EN + mixed) | 10 | 🟢 Telugu TTS confirmed live on a real call; Hindi/English pivot and code-switching still need live rehearsal |
 | 3 | Discovery quality | 10 | 🟡 tools + prompt written, untuned |
 | 4 | Intent classification from indirect answers | 15 | 🟡 Extraction path live-tested and working (correct warm/hot + evidence quotes); deterministic second path not started |
 | 5 | Mid-call WhatsApp action | 15 | ⬜ not started (Phase 4) |
@@ -83,12 +83,52 @@ implemented `telephony/telnyx.ts` (Call Control Dial API — streaming params go
 the outbound dial, not declarative TwiML) against field names read straight from the
 official `telnyx` SDK's `.d.ts` files (guessed doc URLs 404'd), and a provider factory
 (`telephony/index.ts`) so Twilio stays fully wired as a fallback behind one env var.
-`server.ts` now runs both providers' routes side by side. Typechecked clean, committed.
-Two gaps are flagged in code, not hidden: no confirmed Telnyx equivalent of Twilio's `mark`
-(playback-complete is inferred from elapsed time) or `clear` (barge-in flush) — both
-unverifiable until a real call gets through. Fly.io Dockerfile/fly.toml still ready as the
-eventual production target. The immediate next step is Monish finishing Telnyx signup and
-the account clearing review, then the first live call attempt over Telnyx.
+
+**Telnyx then hit its own wall: India-calling is gated behind an account-verification tier**
+that a freshly funded trial account couldn't clear same-day (confirmed live: funding the
+account to $5 did not unlock it — `10039 Account Level Limit Reached` persisted after
+funding, meaning it's a separate KYC/identity tier, not a balance issue). Monish, having
+already hit Twilio's paid wall, did not want to chase down Telnyx's verification steps
+either — and directly corrected an earlier framing in this project: the refusal to spend on
+Twilio was not purely a preference, it was "i couldnt pay 17 bucks for twilio," a real
+access constraint, not a taste for the cheapest option. See decisions table and
+[[cost-avoidance-telephony]] memory — dollar-amount comparisons between paid providers are
+retired from this project's playbook.
+
+**Pivoted again, to Exotel, 2026-08-25 — same day, third telephony provider.** Exotel is an
+Indian domestic provider: calling an Indian number through it is a same-country call, so it
+sidesteps the cross-border KYC wall both Twilio and Telnyx hit entirely. Free trial, no
+card required, ₹1000 trial credit. Live-tested directly against the account (the docs site
+gave repeatedly incomplete/wrong answers) and discovered Exotel's outbound API has two
+modes sharing one URL: "connect two numbers" (bridges two real human legs — confirmed live
+it fails outright for a bot, twice) vs "outgoing call to flow" (omits `To`, points `Url` at
+an Exotel-hosted App Bazaar flow — confirmed live that an arbitrary external URL is
+silently ignored, only Exotel's own flow-reference format works). Had Monish build one flow
+in App Bazaar (a Voicebot Applet pointed at our WSS endpoint) since that step can't be done
+via API. Exotel also speaks raw linear16 PCM over the wire, not μ-law like Twilio/Telnyx — a
+real codec difference, not just different bytes on the same format. `AudioSink` gained a
+`codec` field, Sarvam's output codec is now selected per-call, and `CallSession` no longer
+decodes μ-law internally (moved to each route handler, since only two of three providers
+need it). Unlike Telnyx, Exotel documents real `mark`/`clear` support, so `ExotelAudioSink`
+gets genuine server-confirmed playback completion, not elapsed-time guessing.
+
+**First full live call succeeded 2026-08-25, immediately followed by finding and fixing a
+real pipeline bug.** The Exotel WebSocket connected, the session was created correctly —
+but the call was pure silence. Root cause #1: Soniox's free trial balance had been
+exhausted by this session's own earlier diagnostics (`pnpm chat`/`say`) — a real but tiny
+cost (~$0.12/hour), fixed with a small top-up. Root cause #2, found on the very next
+attempt: even with Soniox working, the call ran ~28 seconds with zero agent activity in the
+logs. `Agent.respond()` requires a caller utterance to seed the turn, so the agent had no
+way to ever speak first — but the whole system prompt is built around an outbound
+Telugu-first opener. This is not an Exotel bug; it would have hit Twilio or Telnyx
+identically had either ever gotten this far — it was simply never caught before because
+this was the first time the full ASR→brain→TTS pipeline had ever run against a real phone
+call. Fixed with `Agent.greet()`, which seeds a synthetic kickoff turn (both Anthropic's and
+OpenAI-shaped chat APIs require the first message to be `role:"user"`) and fires once when
+`CallSession` is constructed. **Confirmed live on the next call: the Telugu greeting is
+actually heard on pickup.** Monish's own assessment: "working, needs a lot of refinement" —
+next is a real polish pass on delivery quality (prompt tuning, pacing, naturalness), not
+more plumbing.
 
 ## WHAT'S DONE
 
@@ -124,32 +164,42 @@ the account clearing review, then the first live call attempt over Telnyx.
 - [x] **Telephony provider abstraction + Telnyx adapter.** `AudioSink` interface decouples
   `CallSession` from the specific provider; `telephony/telnyx.ts` implements outbound
   dialing + bidirectional streaming via Telnyx's Call Control API; `telephony/index.ts`
-  factory picks Twilio or Telnyx off `TELEPHONY_PROVIDER`. Both providers' routes live in
-  `server.ts` side by side. Typechecked, committed.
+  factory picks the active provider off `TELEPHONY_PROVIDER`. Typechecked, committed.
+- [x] **Exotel adapter + `AudioSink` codec support.** `telephony/exotel.ts` — outbound
+  dialing via the "outgoing call to flow" mode, `ExotelAudioSink` with real mark/clear.
+  `AudioSink` now declares its own `codec` (`mulaw` | `linear16`); Sarvam's output codec
+  is selected per-call; `audio.ts` gained `toPcm16Frames()`; μ-law decoding moved out of
+  `CallSession` into each route handler. Exotel is now the default `TELEPHONY_PROVIDER`.
+- [x] **`Agent.greet()` — the agent can finally speak first.** `CallSession` fires it once
+  on connect via a synthetic kickoff turn. Without this the call sat in total silence
+  until the caller spoke, which for an outbound cold call to an unknown number often never
+  happens at all.
+- [x] **🎉 First full live call confirmed end to end, 2026-08-25.** Exotel dials out →
+  `/exotel/media` WebSocket connects → Soniox transcribes → the brain responds → Sarvam
+  speaks → a real Telugu greeting is heard on pickup. Every layer of the pipeline, proven
+  simultaneously, for the first time in the project.
 
 ## WHAT'S NEXT
 
-1. **Blocked on Monish: finish Telnyx signup** (steps in `docs/SETUP.md` §1a), then wait
-   out the payment review (up to 48h). Once `TELNYX_API_KEY`/`TELNYX_PHONE_NUMBER`/
-   `TELNYX_CONNECTION_ID` are real, retry `pnpm call` to TEST_PHONE over the already-working
-   ngrok tunnel. This is the real milestone: TTS and brain are separately proven over
-   text/audio, but nothing has confirmed the full ASR -> brain -> TTS loop holds up on an
-   actual phone line yet. First live Telnyx call is also the first check on the two
-   documented gaps (mark/clear equivalents) — see decisions table.
-2. Phase 3: build the deterministic signal scorer as the second, non-LLM path to
+1. **Refinement pass on delivery quality** — Monish's own words after hearing it live:
+   "working, needs a lot of refinement." This is now a prompting/pacing/naturalness problem,
+   not a plumbing problem. Candidates to dig into: system prompt tone tuning, sentence
+   length/pacing into TTS, Sarvam voice/speed settings, and rehearsing barge-in feel on a
+   real call now that one actually completes.
+2. Full three-language rehearsal matrix (pure Telugu, pure Hindi, pure English, Tenglish,
+   Hinglish) now that a call can actually complete end to end — not yet exercised live.
+3. Phase 3: build the deterministic signal scorer as the second, non-LLM path to
    Hot/Warm/Cold (the LLM-only extraction path already works — this is the redundancy
    the plan calls for so the 15-pt mid-call requirement can't fail on one missed call)
-3. Phase 4: wire real WhatsApp dispatch behind the same ActionSink interface the console
+4. Phase 4: wire real WhatsApp dispatch behind the same ActionSink interface the console
    sink already proves out; wire the callback resolver's output into an actual re-dial
-4. Fly.io Mumbai deployment (Dockerfile/fly.toml ready, smoke-tested) once we're closer to
+5. Fly.io Mumbai deployment (Dockerfile/fly.toml ready, smoke-tested) once we're closer to
    the real call — needed for production reliability, not blocking further dev testing
    now that ngrok is working
 
 ## OPEN BLOCKERS
 
-- ⛔ **Telnyx account pending signup/payment review** — blocks the first live end-to-end
-  call. Twilio remains fully wired as a fallback (needs its own $20 upgrade to unblock,
-  which Monish has declined) — see decisions table.
+- None on telephony as of 2026-08-25 — Exotel is live and confirmed working end to end.
 - ⛔ DATABASE_URL still a placeholder — needed for Phase 4 callback persistence, not before
 - ⛔ Resume PDF still needed
 
@@ -189,6 +239,10 @@ the account clearing review, then the first live call attempt over Telnyx.
 | `AudioSink` interface + provider factory (`telephony/index.ts`), rather than an `if (provider === 'twilio')` branch inside `CallSession` | `CallSession` already owns enough real-time complexity (ASR, VAD, barge-in, turn state) — it shouldn't also know which telephony wire format it's talking over. Twilio and Telnyx use different message envelopes and different (or unconfirmed) playback-confirmation/buffer-flush signals; isolating that behind one interface means the swap in scripts/call.ts, server.ts's routes, and CallSession's constructor was mechanical, not a rewrite | A branch inside CallSession would have been faster to write once, but every future provider (or the eventual real WhatsApp/callback re-dial code touching call state) would have had to know about both wire formats too |
 | Telnyx Call Control Dial API (stream_url on the outbound dial) over TeXML's declarative `<Stream>` verb | Confirmed via WebFetch that TeXML exists and is closer to Twilio's model, but it's still webhook-driven for an inherently simple case: we already know at dial time that we want bidirectional streaming for the whole call. Passing `stream_url`/`stream_track`/`stream_bidirectional_*` straight on `calls.dial()` (confirmed via the official `telnyx` SDK's `calls.d.ts`) starts streaming automatically the moment the call answers — no extra webhook round trip to explicitly start it | TeXML would have meant maintaining two different declarative-markup dialects (Twilio's TwiML and Telnyx's TeXML) for the same job the Call Control API does in one API call |
 | Twilio's `twilioClient` eager module-scope construction converted to lazy, proactively, before it caused a live failure | Caught while making `TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN` optional in the schema: the old `export const twilioClient = twilio(sid, token)` at module scope would throw the instant this file is imported, since those vars are now legitimately empty whenever `TELEPHONY_PROVIDER=telnyx` — which is the default. Same class of bug already fixed once for the LLM provider modules (see the `assertProviderConfigured()` row above) | Waiting to hit this as a live crash would have meant a broken server on the very next boot, for a bug that was visible just from reading the diff that made the env vars optional |
+| Switched primary telephony from Telnyx to Exotel, same day, 2026-08-25 | Telnyx's India-calling gate turned out to be an account-verification tier, not a balance issue — confirmed live by funding the account and re-testing, which still failed with the same `10039` error. Monish, having already hit one paid wall on Twilio, did not want to chase a second provider's verification flow either, and directly corrected the framing of the whole session: this was "i couldnt pay 17 bucks for twilio," a real access constraint, not a preference for the cheapest option. That reframing ruled out continuing to compare dollar amounts between paid providers (Twilio $20 vs Telnyx's tier vs Plivo $25) and redirected the search to same-country providers where cross-border KYC doesn't apply at all — Exotel, free trial, no card, ₹1000 credit | Kept pushing Telnyx's "just complete verification" path would have repeated the exact mistake being corrected — assuming refusal was about price when it was about access |
+| Exotel: "outgoing call to flow" mode over "connect two numbers" mode on the same `Calls/connect` endpoint | Live-tested both. "Connect two numbers" dials `From` as a real human leg first, then bridges to a separately-dialed `To` — confirmed twice that this fails outright for a bot (there's no second human to bridge to; dialing the same number twice, or dialing the ExoPhone itself as `To`, both fail). "Outgoing call to flow" omits `To` entirely: `From` is the one real number dialed, and `Url` points at an Exotel-hosted App Bazaar flow holding a Voicebot Applet — confirmed live that an arbitrary external URL in `Url` is silently accepted but never actually played, only Exotel's own `.../exoml/start_voice/{app_id}` format works | The docs describe both modes under the same endpoint without clearly distinguishing them — this was only discovered by testing real requests against the live account and reading the actual response/behavior differences, the same pattern used successfully for Sarvam, Telnyx and Anthropic earlier in the project |
+| `AudioSink.codec` field + per-call Sarvam output codec, rather than a global mu-law assumption | Exotel speaks raw linear16 PCM over its media socket, not μ-law like Twilio and Telnyx — a real wire-format difference discovered only once a live Exotel call actually reached the audio layer. Rather than hardcode a codec assumption into `CallSession` or `SarvamVoice`, each `AudioSink` implementation now declares its own `codec`, and `SarvamVoice`/`toFrames`/`toPcm16Frames` branch on it — `CallSession` itself stays fully codec-agnostic | A provider-specific `if (isExotel)` branch inside `CallSession` or `SarvamVoice` would have worked once, but the whole point of the `AudioSink` abstraction (see the row above from the Telnyx pivot) was to keep provider wire-format differences out of the call orchestrator |
+| `Agent.greet()` — a synthetic kickoff turn, not an empty-history call | The system prompt has always instructed the agent to open with a Telugu greeting, but `Agent.respond()` required a caller utterance to seed the turn — so the agent had no way to ever speak first. Both Anthropic's and OpenAI-shaped chat APIs reject a request whose first message isn't `role:"user"`, so an empty-history call to kick off the greeting wasn't an option; `greet()` instead pushes a synthetic `"[Call just connected. Begin speaking now...]"` user turn that the caller never sees or hears, then runs the same turn logic as `respond()` | This bug existed since Phase 2 but was invisible until this session's first successful live call — every earlier test exercised ASR, the brain, or TTS individually (`say`/`chat`/`schedule`), never the real trigger sequence a live call produces, where the agent must act before the caller has said anything at all |
 
 ---
 
@@ -198,3 +252,4 @@ the account clearing review, then the first live call attempt over Telnyx.
 - **2026-08-25** — Candidate identity confirmed (M. Monish Vijay, +91 7330671778, doubling as test number). Budget decision: real paid tiers, not free/trial. Phase 1 telephony spine committed.
 - **2026-08-25** — Phase 2 realtime loop written and typechecked clean: Soniox ASR, dual-signal barge-in (VAD + ASR partials), Claude Opus 5 fast-mode agent with sentence-streamed TTS and non-blocking tool calls. Blocked on live credentials for the real test — code compiling is not the bar, a working call is.
 - **2026-08-25** — Two live Twilio calls confirmed the trial account hard-blocks `<Stream>` entirely (not just a passive disclaimer — corrected in the decisions table after the user directly questioned the first explanation). Monish declined the $20 upgrade. Pivoted primary telephony to Telnyx: built `AudioSink` abstraction, `telephony/telnyx.ts` (Call Control Dial API, field names read from the official SDK's `.d.ts`), and a provider factory so Twilio stays wired as a fallback. `server.ts`, `session.ts`, `scripts/call.ts` all updated to the new abstraction; typechecked clean, committed. Blocked on Monish finishing Telnyx signup and the account clearing payment review before the first live end-to-end call can be attempted.
+- **2026-08-25** — Telnyx's India-calling gate turned out to be a KYC/verification tier, not resolvable by funding the account (confirmed live). Monish corrected the session's framing: this was never about preferring the cheapest provider, it was a real inability to pay Twilio's fee — see [[cost-avoidance-telephony]]. Pivoted a third time, to Exotel (Indian domestic provider, sidesteps cross-border KYC entirely, free trial, no card). Live-tested Exotel's API directly against a real trial account, discovered its "outgoing call to flow" mode, built `telephony/exotel.ts` + `ExotelAudioSink` (raw linear16 PCM, not μ-law — `AudioSink` gained a `codec` field, `SarvamVoice` and `audio.ts` made codec-aware). **First full live call succeeded**: phone rang, real Telugu greeting heard on pickup. Getting there also surfaced and fixed a real, provider-independent bug — `Agent.respond()` had no way to let the agent speak first, invisible until this was the first test to ever exercise the real live-call trigger sequence. Typechecked, committed. Monish's assessment: working, needs a real refinement pass on delivery quality next.
