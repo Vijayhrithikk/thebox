@@ -1,3 +1,39 @@
+# Building the ElevateBox agent in Sarvam — complete spec
+
+Everything needed to build this agent from a blank slate: name, greeting, full instructions,
+voice settings, pronunciation dictionary, all four tools, and the campaign test flow. Follow
+top to bottom.
+
+---
+
+## 1. Create the agent
+
+**Build → Agents → Create from Scratch**
+
+- **Name**: `Monish E-commerce Outreach Caller`
+- **Greeting** (the very first thing said, before Instructions take over — keep it short,
+  since Instructions below also tell it to vary the opener every call):
+  `Hi, this is calling on behalf of Monish. I heard you're looking to get an e-commerce website built, do you have a minute?`
+
+## 2. Voice settings
+
+- **Model**: `bulbul:v3`
+- **Speaker**: `roopa`
+- **Pace**: leave at default — don't override it
+- **Language**: Telugu primary, with Hindi and English enabled for mid-call switching
+
+## 3. Pronunciation dictionary
+
+Upload `sarvam-pronunciation-dictionary.json` (sent separately, or pull it from the repo:
+`docs/sarvam-pronunciation-dictionary.json`) via `POST https://api.sarvam.ai/text-to-speech/pronunciation-dictionary`,
+or through the portal if there's an upload UI for it. Attach the returned `dict_id` to this
+agent's voice settings. Covers English business terms embedded in Telugu sentences
+(e-commerce, website, WhatsApp, payment gateway, budget, callback, etc.) plus Monish/Vijay/
+Sarvam as proper nouns — the standard mispronunciation trap for Indian-language TTS.
+
+## 4. Instructions (paste this exactly into the Instructions field)
+
+```
 Persona
 Role: The agent is a freelance outreach caller placing outbound calls on behalf of Monish
 Vijay, a software developer based in Hyderabad who builds e-commerce websites for small
@@ -188,3 +224,87 @@ specific price unless the user states one first and the agent is reframing it ba
 
 Call end: The agent only ends the call after a concrete next step is established or the
 user has clearly declined and been thanked. It never abruptly drops the call.
+```
+
+## 5. Tools
+
+Create all four. Every tool gets this header:
+
+```
+X-Webhook-Secret: 475fc5f9be36811499f56d340783af4d08bd98a6b2463932
+```
+
+### Tool 1 — `classify_lead`
+- **Description**: Record your current read on this lead's buying intent. Call the moment you judge them Hot — do not wait until the call ends.
+- **Model-provided arguments**: `classification` (enum: hot / warm / cold), `evidence` (string — the exact quote or paraphrase that justified it)
+- **Method**: `POST`
+- **URL**: `https://15-207-88-161.sslip.io/webhooks/classify`
+- **Body**:
+  ```json
+  {"classification": "{{classification}}", "evidence": "{{evidence}}", "caller_number": "<phone number variable>", "session_id": "{{conversation_id}}"}
+  ```
+- **Error message**: "okay, noted"
+
+### Tool 2 — `note_discovery`
+- **Description**: Record a concrete fact learned about the caller's requirements — budget, business, product count, timeline, or features.
+- **Model-provided arguments**: `slot` (enum: budget / business / product_count / timeline / features), `value` (string)
+- **Method**: `POST`
+- **URL**: `https://15-207-88-161.sslip.io/webhooks/discovery`
+- **Body**:
+  ```json
+  {"slot": "{{slot}}", "value": "{{value}}"}
+  ```
+- **Error message**: "got it"
+
+### Tool 3 — `request_callback`
+- **Description**: The caller named a time they want to be called back, even a vague one. Pass exactly what they said.
+- **Model-provided arguments**: `spoken_time` (string)
+- **Method**: `POST`
+- **URL**: `https://15-207-88-161.sslip.io/webhooks/callback`
+- **Body**:
+  ```json
+  {"spoken_time": "{{spoken_time}}", "caller_number": "<phone number variable>"}
+  ```
+- **Error message**: "sure, noted that"
+
+### Tool 4 — `call-ended` (on_end lifecycle — fires automatically, not called by the model)
+- **Lifecycle**: `on_end`
+- **Method**: `POST`
+- **URL**: `https://15-207-88-161.sslip.io/webhooks/call-ended`
+- **Body** — use whatever variables hold these values elsewhere in your setup (call summary, classification, discovery slots collected over the call):
+  ```json
+  {
+    "caller_number": "<phone number variable>",
+    "session_id": "{{conversation_id}}",
+    "classification": "<hot, warm, or cold>",
+    "call_summary": "<summary of what was discussed>",
+    "budget": "<budget mentioned, if any>",
+    "business_type": "<their business, if known>",
+    "product_count": "<product count, if known>",
+    "timeline": "<timeline mentioned, if any>",
+    "features": "<features they asked for, if any>",
+    "callback_requested": true,
+    "callback_time": "<what they said, if a callback was requested>"
+  }
+  ```
+- This is what sends the full post-call follow-up (real conversation context + Monish's
+  number + architecture image + resume) — a separate, required piece from the mid-call HOT
+  ping `classify_lead` already triggers.
+
+**Note on the phone-number variable**: whichever built-in variable holds "the number being
+called," use the exact same one consistently across all four tool bodies above (replacing
+every `<phone number variable>` placeholder) — check the variable picker in the tool-editor
+UI for the actual name; it wasn't documented anywhere I could confirm from Sarvam's docs
+directly.
+
+## 6. Test it
+
+1. **Deploy → Outbound Campaigns → Create a Campaign**, one contact: `+917330671778` (your
+   own number — never the recruiter's for a test)
+2. Launch, let it ring, hold a conversation
+3. Watch `https://15-207-88-161.sslip.io/` while on the call — classify/discovery events
+   should appear live
+4. After hanging up, confirm the full follow-up (text + architecture image + resume) lands
+   on WhatsApp
+5. Only once that's clean, point the campaign at `+918688664337` — the real, one-shot scored
+   call
