@@ -1,6 +1,5 @@
-import type { WebSocket } from "ws";
 import type { FastifyBaseLogger } from "fastify";
-import { OutboundAudio } from "./media-stream.js";
+import type { AudioSink } from "./audio-sink.js";
 import { EnergyVad } from "./vad.js";
 import { mulawToPcm16 } from "./audio.js";
 import { SonioxStream } from "../providers/soniox.js";
@@ -34,7 +33,6 @@ const SILENCE_TURN_END_MS = 700;
  * rather than a walkie-talkie.
  */
 export class CallSession {
-  private readonly out: OutboundAudio;
   private readonly asr = new SonioxStream();
   private readonly vad = new EnergyVad();
   private readonly agent: Agent;
@@ -52,12 +50,10 @@ export class CallSession {
   private closed = false;
 
   constructor(
-    socket: WebSocket,
-    streamSid: string,
+    private readonly out: AudioSink,
     public readonly sessionId: string,
     private readonly log: FastifyBaseLogger,
   ) {
-    this.out = new OutboundAudio(socket, streamSid);
     this.voice = new SarvamVoice(this.currentLanguage);
     this.agent = new Agent(createLiveProvider());
     this.extractionProvider = createLiveProvider();
@@ -77,7 +73,7 @@ export class CallSession {
   }
 
   onMark(name: string): void {
-    this.out.onMark(name);
+    this.out.onMark?.(name);
   }
 
   close(): void {

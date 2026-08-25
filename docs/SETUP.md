@@ -1,41 +1,47 @@
 # Credential checklist — do these in order
 
 Everything below runs in parallel with the build. **Item 1 is the critical path** — nothing
-can ring a phone until Twilio is live. **Spend today: ₹0.** Every provider here has a free
-tier that covers the entire build-and-rehearse phase. The one real cost (~₹1,700, Twilio's
-account upgrade) is deliberately deferred to Phase 7, the day we're ready to place the actual
-call to the recruiter — see the note at the end of item 1. It's reimbursed either way.
-
-Paste each key into `.env` (copy `.env.example` first). Never commit `.env`.
+can ring a phone until telephony is live. Paste each key into `.env` (copy `.env.example`
+first). Never commit `.env`.
 
 ---
 
-## 1. Twilio — telephony ⛔ CRITICAL PATH
+## 1. Telephony ⛔ CRITICAL PATH
 
-**Stay on the free trial for now — do not upgrade yet.**
+**Switched to Telnyx 2026-08-25.** Twilio's trial account turned out to hard-block the
+`<Stream>` verb entirely (not just prepend a disclaimer — confirmed via Twilio's own docs
+after two live test calls both cut off identically). Removing that block means the $20
+minimum upgrade, which we're avoiding. Telnyx has no forced minimum deposit — pay-as-you-go
+from a few dollars — but does a payment-method review that can take **up to 48 hours**
+before the account can place real calls. That review is the long pole right now — start it
+immediately, everything else can happen while it's pending.
 
-1. Sign up at **https://www.twilio.com/try-twilio** — no card required
-2. Verify your email and your mobile number
-3. Buy a **US local number** with **Voice** capability:
-   Console → Phone Numbers → Buy a number → Country: United States → check **Voice** → Buy.
-   Free on trial. (Do **not** buy an Indian number — Twilio stopped supporting +91 numbers for
-   outbound in Aug 2024. Calling *into* India from a US number is the supported, consented path.)
-4. **Verify your own second number** as a caller ID so trial calls can actually reach it:
-   Console → Phone Numbers → Verified Caller IDs → Add a new number → enter your test
-   number → answer the call/read back the code. Takes under a minute, unlocks every
-   rehearsal call for free.
-5. From the Console dashboard copy:
-   - `TWILIO_ACCOUNT_SID` (starts `AC…`)
-   - `TWILIO_AUTH_TOKEN`
-   - `TWILIO_PHONE_NUMBER` (the number you just bought, E.164 format e.g. `+15551234567`)
+### 1a. Telnyx (current path)
 
-The trial gives **75 free voice minutes** — plenty for the whole build. Its only two
-restrictions are (a) it can only call numbers you've verified, which is fine since every
-rehearsal targets your own number, and (b) it prepends a short disclaimer message, which
-doesn't matter for a test call to yourself. Neither restriction blocks anything before
-Phase 7. **The real call to 8688664337 is the one call that needs an unverified number** —
-that's the single moment we upgrade (Console → top-right → Upgrade, ~$20/₹1,700), right
-before we place it, not before.
+1. Sign up at **https://telnyx.com/sign-up** — no card required to create the account and
+   start exploring
+2. Verify your email
+3. Mission Control Portal → **Numbers** → buy a number with **Voice** capability. US numbers
+   are cheapest; a number is required as your outbound caller ID regardless of country.
+4. Mission Control Portal → **Programmable Voice** → **Call Control Applications** → create
+   one (this holds the webhook URL our server listens on)
+5. **Add a payment method and a small amount** (even $5) — this starts the up-to-48-hour
+   review clock. Do this now even if the code isn't ready yet.
+6. From the portal copy:
+   - `TELNYX_API_KEY` (API Keys section — starts `KEY...`)
+   - `TELNYX_PHONE_NUMBER` (the number you bought, E.164 format)
+   - `TELNYX_CONNECTION_ID` (the Call Control Application's ID, once created)
+
+Tell me once you've signed up (even before the review clears) — I'll have the adapter code
+ready, and we test the instant the account goes live.
+
+### 1b. Twilio (built, working, on hold)
+
+Fully implemented and proven — telephony spine, barge-in, the works. Kept as a documented,
+ready-to-use fallback (`TELEPHONY_PROVIDER=twilio`) in case Telnyx's review drags or
+something else goes sideways. Re-activating it later means paying the $20 trial-removal
+fee (Console → top-right → Upgrade) — no code changes needed, it already works end-to-end
+up to that wall.
 
 ## 2. Soniox — speech to text
 

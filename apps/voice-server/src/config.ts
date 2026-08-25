@@ -20,9 +20,17 @@ for (const key of Object.keys(process.env)) {
  * touches is optional so Phase 1 can run before every account exists.
  */
 const schema = z.object({
-  TWILIO_ACCOUNT_SID: z.string().startsWith("AC"),
-  TWILIO_AUTH_TOKEN: z.string().min(10),
-  TWILIO_PHONE_NUMBER: z.string().startsWith("+"),
+  /** Which telephony platform places the call. Both wired behind telephony/index.ts's factory — see telephony/telnyx.ts for why Telnyx is the live default despite Twilio being fully built. */
+  TELEPHONY_PROVIDER: z.enum(["twilio", "telnyx"]).default("telnyx"),
+
+  TWILIO_ACCOUNT_SID: z.string().startsWith("AC").optional(),
+  TWILIO_AUTH_TOKEN: z.string().min(10).optional(),
+  TWILIO_PHONE_NUMBER: z.string().startsWith("+").optional(),
+
+  TELNYX_API_KEY: z.string().min(5).optional(),
+  TELNYX_PHONE_NUMBER: z.string().startsWith("+").optional(),
+  /** The Call Control Application ID — Telnyx calls this "connection_id" on the wire. */
+  TELNYX_CONNECTION_ID: z.string().optional(),
 
   SARVAM_API_KEY: z.string().min(5),
   SARVAM_VOICE: z.string().default("priya"),
@@ -78,11 +86,14 @@ if (!parsed.success) {
 
 export const env = parsed.data;
 
-/** wss:// URL Twilio should open its media stream against. */
+/** wss:// URL for the active telephony provider's media stream — different path per provider, both served by this same process. */
 export function streamUrl(): string {
   if (!env.PUBLIC_HOST) {
-    throw new Error("PUBLIC_HOST is not set — Twilio needs a public wss:// endpoint to stream to.");
+    throw new Error(
+      `${env.TELEPHONY_PROVIDER} needs a public wss:// endpoint to stream to — PUBLIC_HOST is not set.`,
+    );
   }
   const host = env.PUBLIC_HOST.replace(/^https?:\/\//, "").replace(/\/$/, "");
-  return `wss://${host}/media`;
+  const path = env.TELEPHONY_PROVIDER === "telnyx" ? "/telnyx/media" : "/media";
+  return `wss://${host}${path}`;
 }

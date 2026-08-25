@@ -37,6 +37,9 @@ importers:
       sarvamai:
         specifier: ^1.1.8
         version: 1.1.8
+      telnyx:
+        specifier: ^7.17.0
+        version: 7.17.0(ws@8.21.3)
       twilio:
         specifier: ^5.4.0
         version: 5.13.1
@@ -707,6 +710,14 @@ packages:
     resolution: {integrity: sha512-1tB5mhVo7U+ETBKNf92xT4hrQa3pm0MZ0PQvuDnWgAAGHDsfp4lPSpiS6psrSiet87wyGPh9ft6wmhOMQ0hDiw==}
     engines: {node: '>=14.16'}
 
+  telnyx@7.17.0:
+    resolution: {integrity: sha512-/MnjMHpUHdb+UWqqu1zdtiyDUxBKN94Wgzd7ASq6hVCYffLueDbll4vco2FJ9+YHz9623YkyIZrBD/tAsCkeHg==}
+    peerDependencies:
+      ws: ^8.18.0
+    peerDependenciesMeta:
+      ws:
+        optional: true
+
   thread-stream@3.2.0:
     resolution: {integrity: sha512-zLBvqpwr4Esa0kRjcrzGU6zL25lePWaCLMx0RQFrmteozIfeNdaMLpG5U7PeHzvlFkAWaRKA9/KVW4F60iB+qw==}
 
@@ -1376,6 +1387,12 @@ snapshots:
       safe-buffer: 5.2.1
 
   strip-json-comments@5.0.3: {}
+
+  telnyx@7.17.0(ws@8.21.3):
+    dependencies:
+      standardwebhooks: 1.0.0
+    optionalDependencies:
+      ws: 8.21.3
 
   thread-stream@3.2.0:
     dependencies:

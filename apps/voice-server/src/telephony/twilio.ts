@@ -1,7 +1,17 @@
 import twilio from "twilio";
 import { env, streamUrl } from "../config.js";
 
-export const twilioClient = twilio(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN);
+// Lazy, not `export const twilioClient = twilio(...)` at module scope — with
+// Telnyx as the default TELEPHONY_PROVIDER, TWILIO_ACCOUNT_SID/AUTH_TOKEN are
+// legitimately unset, and the twilio SDK throws immediately on a malformed
+// SID. Eager construction would crash the process just from *importing* this
+// file, even on a call path that never touches Twilio.
+function twilioClient() {
+  if (!env.TWILIO_ACCOUNT_SID || !env.TWILIO_AUTH_TOKEN) {
+    throw new Error("TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN required when TELEPHONY_PROVIDER=twilio");
+  }
+  return twilio(env.TWILIO_ACCOUNT_SID, env.TWILIO_AUTH_TOKEN);
+}
 
 /**
  * TwiML that hands the call straight to our WebSocket.
@@ -35,7 +45,10 @@ export interface PlaceCallOptions {
  * non-India number is explicitly permitted where the recipient has consented.
  */
 export async function placeCall({ to, sessionId }: PlaceCallOptions) {
-  const call = await twilioClient.calls.create({
+  if (!env.TWILIO_PHONE_NUMBER) {
+    throw new Error("TWILIO_PHONE_NUMBER required when TELEPHONY_PROVIDER=twilio");
+  }
+  const call = await twilioClient().calls.create({
     to,
     from: env.TWILIO_PHONE_NUMBER,
     twiml: connectStreamTwiml({ sessionId }),

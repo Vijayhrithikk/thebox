@@ -1,5 +1,6 @@
 import type { WebSocket } from "ws";
 import { FRAME_MS } from "./audio.js";
+import type { AudioSink } from "./audio-sink.js";
 
 /**
  * Owns everything we write *back* to Twilio on the media socket.
@@ -10,7 +11,7 @@ import { FRAME_MS } from "./audio.js";
  * then stops" — the alternative (pacing frames in realtime) leaves up to a
  * few hundred ms of already-queued speech playing over the human.
  */
-export class OutboundAudio {
+export class OutboundAudio implements AudioSink {
   private markSeq = 0;
   private pending = new Map<string, () => void>();
   private speakingUntil = 0;

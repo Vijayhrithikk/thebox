@@ -7,7 +7,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { env } from "../config.js";
-import { placeCall } from "../telephony/twilio.js";
+import { placeCall } from "../telephony/index.js";
 
 const wantsProspect = process.argv.includes("--prospect");
 const explicit = process.argv.find((a) => a.startsWith("+"));
@@ -25,7 +25,9 @@ if (to === env.PROSPECT_PHONE && !wantsProspect) {
 }
 
 const sessionId = randomUUID();
-console.log(`Dialling ${to}  (session ${sessionId})`);
+console.log(`Dialling ${to} via ${env.TELEPHONY_PROVIDER}  (session ${sessionId})`);
 
 const call = await placeCall({ to, sessionId });
-console.log(`Call queued: ${call.sid}  status=${call.status}`);
+// Twilio and Telnyx return different shapes (call.sid/call.status vs
+// call_control_id/call_leg_id) — dump the whole thing rather than assuming one.
+console.log("Call queued:", call);
