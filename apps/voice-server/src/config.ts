@@ -20,8 +20,17 @@ const schema = z.object({
   SARVAM_MODEL: z.string().default("bulbul:v3"),
 
   SONIOX_API_KEY: z.string().min(5).optional(),
+
+  /** Which model answers the phone. Both are wired behind the same LLMProvider interface — see brain/providers/. */
+  LLM_PROVIDER: z.enum(["anthropic", "deepseek"]).default("anthropic"),
+
   ANTHROPIC_API_KEY: z.string().min(5).optional(),
   LLM_MODEL: z.string().default("claude-opus-5"),
+
+  DEEPSEEK_API_KEY: z.string().min(5).optional(),
+  /** deepseek-chat / deepseek-reasoner retired 2026-07-24 — deepseek-v4-pro is the current flagship. */
+  DEEPSEEK_MODEL: z.string().default("deepseek-v4-pro"),
+
   DATABASE_URL: z.string().optional(),
 
   WHATSAPP_DRIVER: z.enum(["web-session", "cloud-api"]).default("web-session"),
@@ -38,6 +47,21 @@ const schema = z.object({
   /** Public hostname Twilio dials back into. ngrok in dev, fly.dev in prod. */
   PUBLIC_HOST: z.string().optional(),
   LOG_LEVEL: z.string().default("info"),
+}).superRefine((data, ctx) => {
+  if (data.LLM_PROVIDER === "anthropic" && !data.ANTHROPIC_API_KEY) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["ANTHROPIC_API_KEY"],
+      message: "required when LLM_PROVIDER=anthropic",
+    });
+  }
+  if (data.LLM_PROVIDER === "deepseek" && !data.DEEPSEEK_API_KEY) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["DEEPSEEK_API_KEY"],
+      message: "required when LLM_PROVIDER=deepseek",
+    });
+  }
 });
 
 const parsed = schema.safeParse(process.env);

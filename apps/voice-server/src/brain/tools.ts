@@ -1,23 +1,25 @@
-import type Anthropic from "@anthropic-ai/sdk";
+import type { ToolSpec } from "./providers/types.js";
 
 /**
  * Everything the model can *do* mid-call, separate from what it *says*.
+ * Provider-neutral JSON Schema — each provider adapter translates this into
+ * its own tool-definition wire format (see providers/anthropic.ts and
+ * providers/deepseek.ts).
  *
  * These are deliberately fire-and-forget from the model's point of view: the
- * tool_result we hand back is a same-millisecond acknowledgement, never the
+ * tool result we hand back is a same-millisecond acknowledgement, never the
  * outcome of the real side effect (sending the WhatsApp, writing to the DB).
  * That is what "actions never block audio" means concretely — the model
  * gets to keep talking while ActionSink does the slow part in the background.
- * See ActionSink below and its wiring in call/session.ts.
  */
-export const toolDefinitions: Anthropic.Tool[] = [
+export const toolDefinitions: ToolSpec[] = [
   {
     name: "classify_lead",
     description:
       "Record your current read on this lead's buying intent. Call this the moment you " +
       "judge them Hot — do not wait until the call ends. Can be called more than once if " +
       "your read changes as the conversation develops; the latest call wins.",
-    input_schema: {
+    inputSchema: {
       type: "object",
       properties: {
         classification: {
@@ -39,7 +41,7 @@ export const toolDefinitions: Anthropic.Tool[] = [
     description:
       "Record a concrete fact learned about their requirements. Call this every time they " +
       "state a budget, describe their product/business, give a timeline, or name a feature.",
-    input_schema: {
+    inputSchema: {
       type: "object",
       properties: {
         slot: {
@@ -60,7 +62,7 @@ export const toolDefinitions: Anthropic.Tool[] = [
     description:
       "The caller named a time they want to be called back, even a vague one. Pass exactly " +
       "what they said — a scheduler resolves it to an actual datetime.",
-    input_schema: {
+    inputSchema: {
       type: "object",
       properties: {
         spoken_time: {
@@ -111,7 +113,7 @@ export class ConsoleActionSink implements ActionSink {
   }
 }
 
-/** Dispatches a completed tool_use block to the sink and returns the ack text for tool_result. */
+/** Dispatches a completed tool call to the sink and returns the ack text for the tool result. */
 export function handleToolCall(name: string, input: unknown, sink: ActionSink): string {
   switch (name) {
     case "classify_lead":

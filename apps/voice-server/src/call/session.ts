@@ -7,6 +7,7 @@ import { SonioxStream } from "../providers/soniox.js";
 import { synthesize, type Language } from "../providers/sarvam.js";
 import { Agent, type StopReason } from "../brain/agent.js";
 import { ConsoleActionSink } from "../brain/tools.js";
+import { createLiveProvider } from "../brain/providers/index.js";
 
 /** Soniox's 2-letter codes → Sarvam's locale codes. Unknown stays on whatever we were already speaking. */
 function toSarvamLanguage(code: string | undefined, fallback: Language): Language {
@@ -52,6 +53,7 @@ export class CallSession {
   ) {
     this.out = new OutboundAudio(socket, streamSid);
     this.agent = new Agent(
+      createLiveProvider(),
       new ConsoleActionSink((obj, msg) => this.log.info({ sessionId, ...obj as object }, msg)),
     );
     this.wireAsr();

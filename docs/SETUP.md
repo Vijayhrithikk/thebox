@@ -53,12 +53,34 @@ New accounts get free credits. This is the piece doing the Telugu heavy lifting.
 
 New users get ₹100 free credits, which is a lot of speech at ₹30 per 10,000 characters.
 
-## 4. Anthropic — the brain
+## 4. The brain — Anthropic or DeepSeek
+
+Both are wired in and swappable via one line in `.env` (`LLM_PROVIDER=anthropic` or
+`deepseek`) — you only need to sign up for the one you're actually going to run.
+**Monish: you're running DeepSeek**, so item 4b is the one that matters; 4a is documented
+for completeness / as a fallback.
+
+### 4a. Anthropic (`LLM_PROVIDER=anthropic`)
 
 1. Sign up at **https://console.claude.com**
 2. Add credits (start with $20)
 3. Settings → API Keys → Create key
 4. Copy `ANTHROPIC_API_KEY`
+
+### 4b. DeepSeek (`LLM_PROVIDER=deepseek`) ← this one
+
+1. Sign up at **https://platform.deepseek.com**
+2. Add credits — a few dollars is plenty; DeepSeek is dramatically cheaper than Claude
+   per token, and every in-call turn runs in low-reasoning mode (see the note below)
+3. API Keys → Create new API key
+4. Copy `DEEPSEEK_API_KEY`
+
+**One real constraint, not a preference:** the flagship model (`deepseek-v4-pro`) at high
+or max reasoning effort has been independently benchmarked at **12–30 seconds** to its
+first token — that's a dead call, not a slow one. The code forces every live-call turn to
+`reasoning_effort: "low"` (non-thinking mode) regardless of what's configured elsewhere,
+specifically to avoid this. Don't change that for the live path; the deeper reasoning mode
+is reserved for the post-call WhatsApp follow-up, where nobody's waiting on the line.
 
 ## 5. Neon — Postgres
 
