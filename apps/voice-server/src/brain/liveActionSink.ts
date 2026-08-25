@@ -41,7 +41,14 @@ export class LiveActionSink implements ActionSink {
 
   onCallbackRequested(input: RequestCallbackInput): void {
     this.log(input, `[callback] "${input.spoken_time}"`);
-    void scheduleCallbackFromSpeech(this.sessionId, input.spoken_time, this.provider, this.log).catch((err) => {
+
+    const to = getCallerNumber(this.sessionId);
+    if (!to) {
+      this.log({ sessionId: this.sessionId }, "callback requested but no caller number on file — not scheduled");
+      return;
+    }
+
+    void scheduleCallbackFromSpeech(to, input.spoken_time, this.provider, this.log).catch((err) => {
       this.log({ err }, "callback scheduling failed");
     });
   }
@@ -57,7 +64,7 @@ export class LiveActionSink implements ActionSink {
  * (the name, number, and the exact thing the caller said that triggered
  * this), not an LLM composition.
  */
-function buildHotLeadMessage(evidence: string): string {
+export function buildHotLeadMessage(evidence: string): string {
   const name = env.CANDIDATE_NAME || "our team";
   const number = env.CANDIDATE_PHONE || "";
   return (

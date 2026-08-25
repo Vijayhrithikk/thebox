@@ -39,6 +39,21 @@ const SILENCE_TURN_END_MS = 700;
 const CALLER_SILENCE_MS = 10_000;
 
 /**
+ * Grace window after WE start a new spoken segment before VAD/ASR-partial
+ * barge-in is allowed to fire. Without this, any real phone line's acoustic
+ * or line echo of our own TTS output — the caller's earpiece leaking into
+ * their mic, extremely common on speakerphone or a lot of real handsets —
+ * gets detected as "the caller started talking" within the very first
+ * frame, cutting us off mid-word, immediately, every single sentence. That
+ * produces exactly a broken, stuttering, "not spontaneous" conversation
+ * with nothing to do with model or TTS latency. A genuine human interrupt
+ * essentially never lands inside the first ~350ms of us starting to talk —
+ * reaction time alone rules it out — so this window costs nothing on real
+ * barge-in responsiveness while filtering out immediate self-echo.
+ */
+const BARGE_IN_GRACE_MS = 350;
+
+/**
  * One live phone call, start to finish. Owns the whole ASR → brain → TTS
  * loop and both barge-in signals (energy VAD for same-frame speed, ASR
  * partials for confirmation) that keep it feeling like a real conversation
@@ -64,6 +79,9 @@ export class CallSession {
   /** Separate from `silenceTimer` above — that one detects end-of-caller-turn (700ms); this one detects the caller going quiet for the whole call. */
   private callerSilenceTimer: NodeJS.Timeout | null = null;
   private silenceStrikes = 0;
+
+  /** When our current spoken segment started — see BARGE_IN_GRACE_MS. */
+  private speechStartedAt = 0;
 
   constructor(
     private readonly out: AudioSink,
@@ -93,6 +111,7 @@ export class CallSession {
     this.agentBusy = true;
     try {
       const stopReason = await this.agent.greet((sentence) => {
+        this.log.info({ sessionId: this.sessionId, sentence }, "agent said");
         void this.speak(sentence);
       });
       this.log.info({ sessionId: this.sessionId, stopReason }, "greeting sent");
@@ -111,11 +130,15 @@ export class CallSession {
    * CallSession needs to know about.
    */
   handleInboundFrame(pcm: Buffer): void {
-    if (this.vad.feed(pcm) && this.out.isSpeaking) {
+    if (this.vad.feed(pcm) && this.out.isSpeaking && this.pastBargeInGrace()) {
       this.bargeIn("vad");
     }
 
     this.asr.sendAudio(pcm);
+  }
+
+  private pastBargeInGrace(): boolean {
+    return Date.now() - this.speechStartedAt > BARGE_IN_GRACE_MS;
   }
 
   onMark(name: string): void {
@@ -171,7 +194,7 @@ export class CallSession {
     this.asr.on("partial", (text: string) => {
       if (text.trim().length > 2) {
         this.clearSilenceWatch();
-        if (this.out.isSpeaking) this.bargeIn("asr-partial");
+        if (this.out.isSpeaking && this.pastBargeInGrace()) this.bargeIn("asr-partial");
       }
     });
 
@@ -223,6 +246,7 @@ export class CallSession {
     let stopReason: StopReason;
     try {
       stopReason = await this.agent.respond(utterance, (sentence) => {
+        this.log.info({ sessionId: this.sessionId, sentence }, "agent said");
         // Deliberately not awaited — see the comment on `speak`. Awaiting
         // here would block Claude's own stream from being read further,
         // which defeats sentence-level pipelining entirely.
@@ -268,6 +292,7 @@ export class CallSession {
       if (this.closed) return;
       try {
         const speech = await synthPromise;
+        this.speechStartedAt = Date.now();
         await this.out.play(speech.frames);
       } catch (err) {
         this.log.error({ err, sessionId: this.sessionId, text }, "TTS/playback failed");

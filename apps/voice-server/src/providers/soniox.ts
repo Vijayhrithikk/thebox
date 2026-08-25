@@ -63,6 +63,28 @@ export class SonioxStream extends EventEmitter {
           language_hints: ["te", "hi", "en"],
           enable_language_identification: true,
           enable_endpoint_detection: true,
+          // Domain context to bias recognition toward what this call is
+          // actually about — live testing surfaced real mis-hears ("Good
+          // morning, friend s.") that look like generic-vocabulary
+          // hallucination on ordinary speech, not code-switching confusion.
+          context: {
+            general: [
+              { key: "domain", value: "E-commerce website development sales call" },
+              { key: "agent", value: env.CANDIDATE_NAME || "the caller" },
+            ],
+            text: "An outbound sales call in India, in Telugu, Hindi, and English, offering to build an e-commerce website — discussing budget, product catalog, timeline, payment gateway, and callback scheduling.",
+            terms: [
+              "e-commerce",
+              "website",
+              "product catalog",
+              "checkout",
+              "payment gateway",
+              "WhatsApp",
+              "callback",
+              "budget",
+              "timeline",
+            ],
+          },
         }),
       );
       this.ready = true;
@@ -82,7 +104,14 @@ export class SonioxStream extends EventEmitter {
         return;
       }
 
-      const finalTokens = (msg.tokens ?? []).filter((t) => t.is_final && t.text.trim());
+      // `enable_endpoint_detection` makes Soniox emit a literal `<end>`
+      // token (is_final: true) once per finalized segment as an endpoint
+      // signal — it's meant as a trigger, not transcript text. Missing this
+      // meant every turn's utterance had "<end>" concatenated onto it
+      // verbatim (e.g. "హలో.<end>"), a garbled string handed straight to
+      // the LLM as if the caller had said it — a real, silent cause of bad
+      // replies that had nothing to do with prompt or model quality.
+      const finalTokens = (msg.tokens ?? []).filter((t) => t.is_final && t.text.trim() && t.text !== "<end>");
       const partialTokens = (msg.tokens ?? []).filter((t) => !t.is_final && t.text.trim());
 
       if (finalTokens.length > 0) {

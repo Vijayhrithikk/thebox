@@ -9,7 +9,10 @@ import { assertProviderConfigured } from "./brain/providers/index.js";
 import { assertTelephonyConfigured } from "./telephony/index.js";
 import { TelnyxAudioSink } from "./telephony/telnyx.js";
 import { ExotelAudioSink } from "./telephony/exotel.js";
-import { initWhatsApp } from "./actions/whatsapp.js";
+import { initWhatsApp, sendWhatsApp } from "./actions/whatsapp.js";
+import { buildHotLeadMessage } from "./brain/liveActionSink.js";
+import { scheduleCallbackFromSpeech } from "./brain/callbackScheduler.js";
+import { createLiveProvider } from "./brain/providers/index.js";
 
 // Fail loudly at boot, not three seconds into a live call — the actual point
 // of validating env in the first place. Standalone scripts (say.ts) skip
@@ -36,6 +39,66 @@ app.get("/health", async () => ({ ok: true, at: new Date().toISOString() }));
 // paired, .baileys-auth/ persists the session so this reconnects silently
 // on every future boot.
 void initWhatsApp((obj, msg) => app.log.info(obj as object, msg));
+
+/**
+ * Webhook targets for Sarvam's Voice Agent "API tool" calls — the mid-call
+ * action layer when Sarvam's own managed agent (not our CallSession) is
+ * running the conversation. Same underlying actions
+ * (sendWhatsApp/scheduleCallbackFromSpeech) as the in-process path in
+ * liveActionSink.ts; the only real difference is where the caller's phone
+ * number comes from — there it's read from telephony/index.ts's
+ * sessionId->number map (populated by our own placeCall()), here Sarvam
+ * has to pass it explicitly in the tool call body, since Sarvam places the
+ * call itself and that map is never populated for those calls. See the
+ * Sarvam agent's tool config for how each field gets mapped from the
+ * call's built-in/custom variables.
+ */
+const webhookLog = (obj: unknown, msg: string) => app.log.info(obj as object, msg);
+// In-memory, per-process guard so a HOT verdict called more than once in
+// the same conversation (Sarvam's agent can call the tool again as
+// confidence increases) only sends one WhatsApp — same intent as
+// dedupeHotClassification() in tools.ts, just keyed by whatever session
+// identifier Sarvam passes since there's no persistent CallSession object
+// to hold that state on this path.
+const hotAlreadyFired = new Set<string>();
+
+app.post("/webhooks/classify", async (request, reply) => {
+  const body = request.body as {
+    classification?: "hot" | "warm" | "cold";
+    evidence?: string;
+    caller_number?: string;
+    session_id?: string;
+  };
+  app.log.info(body, "[sarvam webhook] classify");
+
+  if (body.classification === "hot" && body.caller_number) {
+    const dedupeKey = body.session_id ?? body.caller_number;
+    if (!hotAlreadyFired.has(dedupeKey)) {
+      hotAlreadyFired.add(dedupeKey);
+      void sendWhatsApp(body.caller_number, buildHotLeadMessage(body.evidence ?? ""), webhookLog);
+    }
+  }
+
+  return reply.send({ ok: true });
+});
+
+app.post("/webhooks/discovery", async (request, reply) => {
+  app.log.info(request.body as object, "[sarvam webhook] discovery");
+  return reply.send({ ok: true });
+});
+
+app.post("/webhooks/callback", async (request, reply) => {
+  const body = request.body as { spoken_time?: string; caller_number?: string };
+  app.log.info(body, "[sarvam webhook] callback requested");
+
+  if (body.spoken_time && body.caller_number) {
+    void scheduleCallbackFromSpeech(body.caller_number, body.spoken_time, createLiveProvider(), webhookLog).catch(
+      (err) => webhookLog({ err }, "callback scheduling failed"),
+    );
+  }
+
+  return reply.send({ ok: true });
+});
 
 app.post("/call-status", async (request) => {
   const body = request.body as Record<string, string>;

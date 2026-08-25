@@ -1,20 +1,28 @@
 import { randomUUID } from "node:crypto";
 import { resolveCallbackTime } from "./callbackResolver.js";
 import type { LLMProvider } from "./providers/types.js";
-import { placeCall, getCallerNumber } from "../telephony/index.js";
+import { placeCall } from "../telephony/index.js";
 
 /**
  * Turns a resolved callback time into an actual future call — the part of
  * the brief that makes this more than a note ("call me back tomorrow" has
  * to result in the phone actually ringing tomorrow, not just a logged
  * intention). In-process only: a `setTimeout` per scheduled callback, keyed
- * by a fresh id, held in memory for the life of this server process. See
- * telephony/index.ts's `callerNumbers` map for the same "not persisted yet"
- * caveat — both need Postgres before this survives a restart or scales past
- * one process, which is exactly what DATABASE_URL is reserved for.
+ * by a fresh id, held in memory for the life of this server process — needs
+ * Postgres before this survives a restart or scales past one process, which
+ * is exactly what DATABASE_URL is reserved for.
+ *
+ * Takes the destination number directly rather than looking it up from a
+ * sessionId — telephony/index.ts's sessionId->number map only gets
+ * populated by calls this process places itself, and once Sarvam's voice
+ * agent is placing the primary call (see webhooks in server.ts), that map
+ * is empty for calls it originates. The re-dial itself still goes through
+ * our own Exotel adapter (placeCall below), not Sarvam — Sarvam's outbound
+ * calling is portal/campaign-driven with no API found yet for placing one
+ * ad-hoc call, so the callback re-dial keeps using the pipeline we already
+ * have working rather than blocking on that.
  */
 export interface ScheduledCallback {
-  originalSessionId: string;
   to: string;
   at: Date;
 }
@@ -25,20 +33,14 @@ const scheduled = new Map<string, ScheduledCallback>();
 const MAX_DELAY_MS = 2 ** 31 - 1;
 
 export async function scheduleCallbackFromSpeech(
-  originalSessionId: string,
+  to: string,
   spokenTime: string,
   provider: LLMProvider,
   log: (obj: unknown, msg: string) => void,
 ): Promise<void> {
   const resolution = await resolveCallbackTime(spokenTime, provider);
   if (!resolution.resolvable || !resolution.isoDatetime) {
-    log({ originalSessionId, spokenTime, resolution }, "callback phrase unresolvable — not scheduled");
-    return;
-  }
-
-  const to = getCallerNumber(originalSessionId);
-  if (!to) {
-    log({ originalSessionId, spokenTime }, "callback requested but no caller number on file — cannot schedule");
+    log({ to, spokenTime, resolution }, "callback phrase unresolvable — not scheduled");
     return;
   }
 
@@ -46,26 +48,26 @@ export async function scheduleCallbackFromSpeech(
   const delayMs = at.getTime() - Date.now();
 
   if (delayMs <= 0) {
-    log({ originalSessionId, spokenTime, at }, "resolved callback time is already in the past — not scheduled");
+    log({ to, spokenTime, at }, "resolved callback time is already in the past — not scheduled");
     return;
   }
   if (delayMs > MAX_DELAY_MS) {
-    log({ originalSessionId, spokenTime, at }, "resolved callback time is too far out for this in-process scheduler — not scheduled");
+    log({ to, spokenTime, at }, "resolved callback time is too far out for this in-process scheduler — not scheduled");
     return;
   }
 
   const callbackId = randomUUID();
-  scheduled.set(callbackId, { originalSessionId, to, at });
+  scheduled.set(callbackId, { to, at });
 
   setTimeout(() => {
     scheduled.delete(callbackId);
-    log({ originalSessionId, to, at }, "firing scheduled callback");
+    log({ to, at }, "firing scheduled callback");
     placeCall({ to, sessionId: randomUUID() }).catch((err) => {
-      log({ err, originalSessionId, to }, "scheduled callback failed to place");
+      log({ err, to }, "scheduled callback failed to place");
     });
   }, delayMs);
 
-  log({ originalSessionId, to, at, confidence: resolution.confidence }, "callback scheduled");
+  log({ to, at, confidence: resolution.confidence }, "callback scheduled");
 }
 
 /** For the eventual console view — what's currently queued, in memory, right now. */

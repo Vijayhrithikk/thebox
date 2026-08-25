@@ -77,15 +77,20 @@ export class SarvamVoice {
         output_audio_codec: this.codec,
         speech_sample_rate: 8000,
         // bulbul:v3 has no pitch/loudness control, but pace and temperature
-        // are real levers, tuned twice now against live-call feedback.
-        // First pass (pace 0.92, temperature 0.75) fixed "robotic" but
-        // over-corrected into "a bit slow" with too little expressive
-        // range — back to a natural default pace, temperature pushed
-        // further for the "ups and downs, excitement, buildups" the
-        // second live call asked for. Still not a final number — next
-        // thing to tune by ear.
+        // are real levers, tuned three times now against live-call
+        // feedback. Pushing temperature up for "ups and downs, excitement"
+        // was the wrong lever: at 0.88 it sounded like the speaker
+        // identity itself kept shifting — "like multiple women switching"
+        // — not one voice being expressive. Temperature is randomness in
+        // the model's output broadly, not a targeted prosody knob, so
+        // pushing it destabilizes voice *identity* before it reliably adds
+        // expressive range. Pulled well below Sarvam's own default (0.6)
+        // for a stable, consistent single voice; emotional range is now
+        // carried entirely by the text itself (punctuation, word choice,
+        // sentence rhythm — see prompt.ts's Style section), which is the
+        // correct lever for that and doesn't risk identity drift.
         pace: 1.0,
-        temperature: 0.88,
+        temperature: 0.45,
       },
     });
   }
