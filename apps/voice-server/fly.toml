@@ -7,7 +7,7 @@
 # app name below is a placeholder — `fly launch` will prompt to change it if
 # taken; update this file to match whatever name actually gets created.
 app = "elevatebox-voice"
-primary_region = "bom" # Mumbai — closest region to Indian carriers and to Sarvam
+primary_region = "bom" # Mumbai — India-based, reasonable default even though this server no longer handles live call audio directly (Sarvam does)
 
 [build]
   dockerfile = "Dockerfile"
@@ -31,3 +31,12 @@ primary_region = "bom" # Mumbai — closest region to Indian carriers and to Sar
 [[vm]]
   size = "shared-cpu-1x"
   memory = "512mb"
+
+# WhatsApp pairing (.baileys-auth/) has to survive restarts and redeploys —
+# without a persisted volume, every deploy would wipe it and force
+# rescanning the QR, which is a real risk to take on right before the
+# actual scored call. Create once with:
+#   fly volumes create baileys_auth --region bom --size 1 --config apps/voice-server/fly.toml
+[mounts]
+  source = "baileys_auth"
+  destination = "/app/apps/voice-server/.baileys-auth"

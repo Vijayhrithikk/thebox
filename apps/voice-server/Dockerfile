@@ -21,6 +21,10 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/apps/voice-server/node_modules ./apps/voice-server/node_modules
 COPY --from=build /app/apps/voice-server/dist ./apps/voice-server/dist
 COPY apps/voice-server/package.json ./apps/voice-server/package.json
+# RESUME_PATH/ARCHITECTURE_IMAGE_PATH default to ../../assets/... relative
+# to this process's cwd (apps/voice-server) — needs this directory present
+# at /app/assets for the post-call follow-up's attachments to resolve.
+COPY assets ./assets
 
 WORKDIR /app/apps/voice-server
 EXPOSE 8080
