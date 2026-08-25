@@ -6,14 +6,15 @@ import { initWhatsApp, sendWhatsApp } from "./actions/whatsapp.js";
 import { sendFollowUp, type CallOutcome } from "./actions/followup.js";
 import { scheduleCallbackFromSpeech } from "./brain/callbackScheduler.js";
 import { recordEvent, getEvents } from "./monitoring.js";
+import { CONSOLE_HTML } from "./console.js";
 
 /**
  * This server no longer runs the live call — Sarvam's Voice Agent does,
  * with its own STT, LLM, and TTS. What's left here is the action backend
  * Sarvam's tools call mid-call and at call end (see docs/sarvam-agent-*
- * for the portal setup this pairs with), plus a small in-memory event feed
- * for the monitoring console (apps/console). See PROGRESS.md for why the
- * pipeline that used to live in this file was removed.
+ * for the portal setup this pairs with), a monitoring console, and a small
+ * in-memory event feed backing it. See PROGRESS.md for why the pipeline
+ * that used to live in this file was removed.
  */
 assertProviderConfigured();
 assertTelephonyConfigured();
@@ -23,6 +24,10 @@ const app = Fastify({
 });
 
 app.get("/health", async () => ({ ok: true, at: new Date().toISOString() }));
+
+app.get("/", async (_request, reply) => {
+  reply.type("text/html").send(CONSOLE_HTML);
+});
 
 // Not awaited — pairing (scanning a QR the first time) is a one-off manual
 // step that shouldn't hold up the HTTP server from listening. Once paired,
