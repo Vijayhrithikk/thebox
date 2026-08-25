@@ -9,6 +9,7 @@ import { assertProviderConfigured } from "./brain/providers/index.js";
 import { assertTelephonyConfigured } from "./telephony/index.js";
 import { TelnyxAudioSink } from "./telephony/telnyx.js";
 import { ExotelAudioSink } from "./telephony/exotel.js";
+import { initWhatsApp } from "./actions/whatsapp.js";
 
 // Fail loudly at boot, not three seconds into a live call — the actual point
 // of validating env in the first place. Standalone scripts (say.ts) skip
@@ -29,6 +30,12 @@ await app.register(websocket);
 await app.register(formbody);
 
 app.get("/health", async () => ({ ok: true, at: new Date().toISOString() }));
+
+// Not awaited — pairing (scanning a QR the first time) is a one-off manual
+// step that shouldn't hold up the HTTP/WS server from listening. Once
+// paired, .baileys-auth/ persists the session so this reconnects silently
+// on every future boot.
+void initWhatsApp((obj, msg) => app.log.info(obj as object, msg));
 
 app.post("/call-status", async (request) => {
   const body = request.body as Record<string, string>;
