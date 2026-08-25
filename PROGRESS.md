@@ -26,7 +26,7 @@ Target: not 60. The best submission they receive.
 | 3 | Discovery quality | 10 | 🟡 tools + prompt written, untuned |
 | 4 | Intent classification from indirect answers | 15 | 🟡 Extraction path live-tested and working (correct warm/hot + evidence quotes); deterministic second path not started |
 | 5 | Mid-call WhatsApp action | 15 | ⬜ not started (Phase 4) |
-| 6 | Callback scheduling from speech | 10 | 🟡 tool captures raw phrase; resolver not built |
+| 6 | Callback scheduling from speech | 10 | 🟢 resolver live-tested: relative dates, festival anchors, ambiguous times all correct |
 | 7 | Follow-up + WhatsApp quality | 10 | ⬜ not started (Phase 4) |
 | 8 | Engineering judgement | 5 | 🟢 architecture defensible — see Decisions table |
 
@@ -85,20 +85,24 @@ genuinely doesn't matter. TTS layer: `pnpm say` still measures 251ms time-to-fir
 
 ## WHAT'S NEXT
 
-1. Sign up for Twilio **trial** (no card, 75 free voice minutes) + verify TEST_PHONE as a
-   caller ID -> first live `pnpm call` to TEST_PHONE, judge whether the Telugu opener
-   sounds human and the conversation loop actually holds up on a real line. Zero spend.
-2. Soniox + Sarvam + Anthropic keys land -> same live test, full loop. All free-tier.
-3. Phase 3: tune the deterministic intent scorer and discovery slot-filling against real
-   rehearsal transcripts (Monish is fluent in Telugu + Hindi -- no external testers needed)
-4. Phase 7 only: Twilio account upgrade (~₹1,700) — the single moment real money is spent,
-   right before the real call to 8688664337 (see Decisions row on telephony cost below)
+1. Stand up an ngrok tunnel (dev-only, free) so Twilio has a public wss:// endpoint to
+   stream to -> first-ever live `pnpm call` to TEST_PHONE. This is the real milestone:
+   TTS and brain are separately proven over text/audio, but nothing has confirmed the
+   full ASR -> brain -> TTS loop holds up on an actual phone line yet.
+2. Phase 3: build the deterministic signal scorer as the second, non-LLM path to
+   Hot/Warm/Cold (the LLM-only extraction path already works — this is the redundancy
+   the plan calls for so the 15-pt mid-call requirement can't fail on one missed call)
+3. Phase 4: wire real WhatsApp dispatch behind the same ActionSink interface the console
+   sink already proves out; wire the callback resolver's output into an actual re-dial
+4. Phase 7 only: Twilio account upgrade (~₹1,700) — the single moment real money is
+   spent, right before the real call to 8688664337 (see decisions table)
 
 ## OPEN BLOCKERS
 
-- ⛔ Twilio trial signup not yet done (no cost — see decision below)
-- ⛔ Soniox / Sarvam / Anthropic API keys not yet in .env (no cost — free tiers)
+- ⛔ No phone has actually rung yet — needs a public endpoint (ngrok, in progress)
+- ⛔ DATABASE_URL still a placeholder — needed for Phase 4 callback persistence, not before
 - ⛔ Resume PDF still needed
+- ⛔ Twilio account still on trial (by design — see decisions table) — fine until Phase 7
 
 ---
 
@@ -121,6 +125,7 @@ genuinely doesn't matter. TTS layer: `pnpm say` still measures 251ms time-to-fir
 | Sarvam TTS: persistent streaming WebSocket per call, not one REST POST per sentence | First live test measured 1693ms time-to-first-byte on the batch endpoint — each sentence paid a fresh TLS handshake plus waited for the *entire* clip before any audio was usable. Rewrote against the official `sarvamai` SDK's streaming client, one socket opened per call and reused for every sentence. Re-measured: **251ms**, a 6.7x cut, matching Sarvam's own advertised streaming latency. Also requests `output_audio_codec:"mulaw"` + `speech_sample_rate:8000` directly, so Sarvam's output needs zero conversion before hitting Twilio | Would have shipped the 1.7s version if `pnpm say` hadn't been run against real credentials before wiring it into the live call path — validated by measurement, not assumption |
 | Live conversational turn never sends tools; classify/discovery/callback moved to a parallel `signalExtractor.ts` side-channel | Live-measured: the moment the live turn included tool schemas, DeepSeek produced a silent tool-only response with zero spoken text every time, forcing a second sequential API round trip before any audio could start — 6.4s (flagship) and 3.6s (flash) to first sentence, both past the brief's "three seconds and the conversation is dead" bar. A prompt instruction telling it to speak *and* call tools together had zero measured effect — this is how the API's tool-calling shape behaves, not a promptable preference. Splitting extraction into its own concurrent, never-awaited call cut first-sentence latency to ~2-3s, consistent across four runs, while classification/discovery still land correctly (verified: budget/timeline/business extracted, correct hot/warm/cold with real evidence quotes) | Tried the cheap fix first (a prompt instruction) and measured that it didn't work before reaching for the architectural one — this is also the exact "deterministic path runs in parallel with the LLM" design the plan already committed to for intent classification; live testing just proved it wasn't optional or Phase-3-only |
 | DeepSeek live path hard-coded to `deepseek-v4-flash`, never `DEEPSEEK_MODEL`; flagship (`deepseek-v4-pro`) reserved for `createDeepReasoningProvider()` | Even with tools stripped from the live turn, the flagship measured ~10s to first token on a plain conversational reply — roughly 5x flash on the identical prompt — and showed weaker JSON-schema adherence on tool calls in the extractor (invented its own key names instead of following the declared schema). Flash is fast enough to hold a conversation; the flagship's quality is real but only usable where nobody's waiting on the line | Matches what "flagship" was actually asked for: use it, but only where its slowness is invisible — the post-call WhatsApp follow-up (Phase 4), not the live call |
+| Callback resolution via a single-tool LLM call (`callbackResolver.ts`), not a date-parsing library | "After Diwali" needs calendar knowledge no date library has, and open-ended Indian-English phrasing ("next Monday around 6", "sometime, I'll let you know") doesn't fit a fixed grammar. Live-tested: correctly computed "next Monday" from the actual current date, resolved "around 6" to an approximate evening time, and correctly distinguished a real-but-vague anchor ("after Diwali") from a genuinely unusable one ("sometime") — after one prompt-tuning pass caught the model being too conservative and declining to resolve the Diwali case at all on the first try | A hand-rolled parser would need to encode Indian festival dates and open-ended phrasing rules by hand, and would still fail on phrasing nobody thought to test for |
 | Mid-conversation system messages for live state | Opus 5 accepts `role:"system"` inside `messages[]`, so we inject elapsed time / intent score / "WhatsApp already sent" without invalidating the cached prefix | Rebuilding the system prompt each turn would cold-cache every turn |
 | Dual-path intent detection | A deterministic signal scorer runs in parallel with the LLM; whichever crosses the threshold first fires the WhatsApp | Sole reliance on an LLM tool call means one missed call = 15 points gone |
 | Fly.io `bom` (Mumbai) | Physically closest region to Indian carriers and to Sarvam. Every ms of RTT is scored under "latency kills the conversation" | Vercel can't hold long-lived WebSockets; US regions add ~200ms round trip |
