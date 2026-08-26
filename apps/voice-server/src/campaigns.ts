@@ -1,12 +1,16 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { resolve, dirname } from "node:path";
 import { placeCall, isTelephonyConfigured } from "./telephony/index.js";
 
 /**
  * Calling numbers one at a time, from our own console, instead of Sarvam's
  * portal — a CSV upload or a single quick-dial both become a "campaign"
  * (a list of contacts to dial), processed sequentially by one dispatcher
- * loop below. In-memory only, same tradeoff as monitoring.ts: this doesn't
- * need to survive a restart to be useful for a demo.
+ * loop below. Mirrored to disk (same pattern as monitoring.ts) so a
+ * container restart doesn't wipe campaign history — this was pure
+ * in-memory originally, which was fine until redeploys started happening
+ * often enough to actually lose real campaign data.
  *
  * Retries: "placed" only means the API accepted the request — it says
  * nothing about whether the person actually answered. recordCallOutcome()
@@ -42,6 +46,46 @@ const order: string[] = [];
 /** attempt_id -> which contact placed it, so the call-completed webhook (keyed by attempt_id) can update the right contact and decide whether to retry. */
 const attemptIndex = new Map<string, { campaignId: string; contactId: string }>();
 
+const DATA_FILE = resolve(process.cwd(), "data/campaigns.json");
+
+interface PersistedState {
+  campaigns: Campaign[];
+  attemptIndex: [string, { campaignId: string; contactId: string }][];
+  retryConfig?: { maxAttempts: number; retryDelayMinutes: number };
+}
+
+function loadState(): void {
+  try {
+    if (!existsSync(DATA_FILE)) return;
+    const state: PersistedState = JSON.parse(readFileSync(DATA_FILE, "utf8"));
+    for (const c of state.campaigns) {
+      campaigns.set(c.id, c);
+      order.push(c.id);
+    }
+    for (const [attemptId, ref] of state.attemptIndex) attemptIndex.set(attemptId, ref);
+    if (state.retryConfig) {
+      maxAttempts = state.retryConfig.maxAttempts;
+      retryDelayMs = state.retryConfig.retryDelayMinutes * 60_000;
+    }
+  } catch (err) {
+    console.error("failed to load campaigns from disk", err);
+  }
+}
+
+function persist(): void {
+  try {
+    mkdirSync(dirname(DATA_FILE), { recursive: true });
+    const state: PersistedState = {
+      campaigns: listCampaigns(),
+      attemptIndex: [...attemptIndex.entries()],
+      retryConfig: getRetryConfig(),
+    };
+    writeFileSync(DATA_FILE, JSON.stringify(state));
+  } catch (err) {
+    console.error("failed to persist campaigns to disk", err);
+  }
+}
+
 /** Loose E.164-ish normalization for CSV rows that dropped the country code — assumes India (+91) for bare 10-digit numbers, since that's this project's whole audience. Anything already starting with "+" is trusted as-is. */
 function normalizeNumber(raw: string): string {
   const trimmed = raw.trim().replace(/[\s-]/g, "");
@@ -61,6 +105,7 @@ export function createCampaign(label: string, rawContacts: { number: string; nam
   const campaign: Campaign = { id: randomUUID(), createdAt: new Date().toISOString(), label, contacts };
   campaigns.set(campaign.id, campaign);
   order.unshift(campaign.id);
+  persist();
   return campaign;
 }
 
@@ -83,6 +128,8 @@ export function getCampaign(id: string): Campaign | undefined {
 let maxAttempts = 3;
 let retryDelayMs = 3 * 60_000;
 
+loadState();
+
 export function getRetryConfig(): { maxAttempts: number; retryDelayMinutes: number } {
   return { maxAttempts, retryDelayMinutes: retryDelayMs / 60_000 };
 }
@@ -90,6 +137,7 @@ export function getRetryConfig(): { maxAttempts: number; retryDelayMinutes: numb
 export function setRetryConfig(nextMaxAttempts: number, retryDelayMinutes: number): void {
   maxAttempts = Math.min(10, Math.max(1, Math.round(nextMaxAttempts)));
   retryDelayMs = Math.min(60, Math.max(0.5, retryDelayMinutes)) * 60_000;
+  persist();
 }
 
 export function recordCallOutcome(attemptId: string | undefined, status: string | undefined): void {
@@ -101,16 +149,14 @@ export function recordCallOutcome(attemptId: string | undefined, status: string 
 
   if (status === "connected") {
     contact.status = "connected";
-    return;
-  }
-
-  if (contact.attempts < maxAttempts) {
+  } else if (contact.attempts < maxAttempts) {
     contact.status = "queued";
     contact.retryAfter = new Date(Date.now() + retryDelayMs).toISOString();
   } else {
     contact.status = "failed";
     contact.error = `not answered after ${contact.attempts} attempt(s) — last status: ${status ?? "unknown"}`;
   }
+  persist();
 }
 
 /** One rented number, one call at a time — overlapping outbound attempts would just collide on it. */
@@ -179,6 +225,7 @@ async function runLoop(log: (obj: unknown, msg: string) => void): Promise<void> 
       }
       log({ number: contact.number, err, attempt: contact.attempts }, "campaign call failed to place");
     }
+    persist();
     await sleep(DIAL_SPACING_MS);
   }
 }

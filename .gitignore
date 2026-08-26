@@ -11,6 +11,7 @@ build/
 auth_session/
 .baileys-auth/
 .whatsapp-qr.png
+apps/voice-server/data/
 assets/resume.pdf
 Vijay_71778.pdf
 recordings/

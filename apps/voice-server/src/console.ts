@@ -117,6 +117,15 @@ export const CONSOLE_HTML = `<!doctype html>
 <div class="stats" id="stats"></div>
 <main>
   <div class="panel">
+    <h2>Sarvam call history</h2>
+    <div class="dial-row">
+      <button id="backfillBtn" class="secondary">⤓ Import full history from Sarvam</button>
+      <span id="backfillMsg" class="hint"></span>
+    </div>
+    <div class="hint">Pulls every past call from Sarvam's Analytics API (transcript included) — safe to re-run, only imports calls not already in the feed below.</div>
+  </div>
+
+  <div class="panel">
     <h2>Call a number</h2>
     <div class="dial-row">
       <input type="text" id="dialNumber" placeholder="+91XXXXXXXXXX" />
@@ -347,6 +356,22 @@ async function postJSON(url, body) {
 function showMsg(el, text, ok) {
   el.innerHTML = '<div class="msg ' + (ok ? "ok" : "err") + '">' + text + '</div>';
 }
+
+document.getElementById("backfillBtn").addEventListener("click", async () => {
+  const btn = document.getElementById("backfillBtn");
+  const msgEl = document.getElementById("backfillMsg");
+  btn.disabled = true;
+  msgEl.textContent = "importing… this can take a bit (fetches a transcript per call)";
+  try {
+    const data = await postJSON("/backfill", {});
+    msgEl.textContent = "imported " + data.imported + ", skipped " + data.skipped + " already-known, " + data.total + " total in Sarvam";
+    refresh();
+  } catch (err) {
+    msgEl.textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 document.getElementById("dialBtn").addEventListener("click", async () => {
   const numberEl = document.getElementById("dialNumber");

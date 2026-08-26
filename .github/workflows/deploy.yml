@@ -23,10 +23,13 @@ jobs:
             cd "${{ secrets.EC2_REPO_PATH }}"
             git pull --ff-only
             docker build -t elevatebox-voice -f apps/voice-server/Dockerfile .
-            docker stop elevatebox-voice || true
-            docker rm elevatebox-voice || true
+            # -f (not stop+rm): a container from a prior interrupted deploy can
+            # be left behind holding the name, and stop+rm alone silently no-ops
+            # on it — bit us once already.
+            docker rm -f elevatebox-voice || true
             docker run -d --name elevatebox-voice --restart unless-stopped \
               --env-file .env -p 8080:8080 \
               -v /home/ubuntu/app/.baileys-auth-data:/app/apps/voice-server/.baileys-auth \
+              -v /home/ubuntu/app/.persist-data:/app/apps/voice-server/data \
               elevatebox-voice
             docker image prune -f

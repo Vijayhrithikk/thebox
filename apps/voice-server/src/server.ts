@@ -8,6 +8,7 @@ import { sendFollowUp, type CallOutcome } from "./actions/followup.js";
 import { scheduleCallbackFromSpeech } from "./brain/callbackScheduler.js";
 import { recordEvent, getEvents } from "./monitoring.js";
 import { createCampaign, listCampaigns, startCampaignDispatcher, recordCallOutcome, getRetryConfig, setRetryConfig } from "./campaigns.js";
+import { backfillFromSarvam } from "./backfill.js";
 import { CONSOLE_HTML } from "./console.js";
 
 /**
@@ -112,6 +113,16 @@ startCampaignDispatcher((obj, msg) => app.log.info(obj as object, msg));
 app.get("/campaigns", async (request, reply) => {
   if (!requireConsoleAuth(request, reply)) return;
   return { campaigns: listCampaigns() };
+});
+
+app.post("/backfill", async (request, reply) => {
+  if (!checkAdminAuth(request)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  try {
+    const result = await backfillFromSarvam(webhookLog);
+    return reply.send({ ok: true, ...result });
+  } catch (err) {
+    return reply.code(502).send({ ok: false, error: err instanceof Error ? err.message : String(err) });
+  }
 });
 
 app.get("/campaigns/retry-config", async (request, reply) => {
