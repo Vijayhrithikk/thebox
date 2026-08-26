@@ -26,5 +26,7 @@ jobs:
             docker stop elevatebox-voice || true
             docker rm elevatebox-voice || true
             docker run -d --name elevatebox-voice --restart unless-stopped \
-              --env-file .env -p 8080:8080 elevatebox-voice
+              --env-file .env -p 8080:8080 \
+              -v /home/ubuntu/app/.baileys-auth-data:/app/apps/voice-server/.baileys-auth \
+              elevatebox-voice
             docker image prune -f
