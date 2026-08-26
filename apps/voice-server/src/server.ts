@@ -216,5 +216,87 @@ app.post("/webhooks/call-ended", async (request, reply) => {
   return reply.send({ ok: true });
 });
 
+/**
+ * Fires directly from Sarvam's call-completion infrastructure, not the
+ * agent's on_end tool — added because that on_end tool (call_ended, see
+ * the /webhooks/call-ended route above) never fired once across repeated
+ * live tests despite being correctly configured, so the resume/architecture
+ * follow-up never sent. This path is set via webhook_config on every call
+ * we place ourselves (telephony/sarvam.ts) and doesn't depend on the
+ * agent's tool system at all. Bonus: it also carries a real transcript and
+ * interaction_id, which the on_end tool never could.
+ */
+const callCompletedAlreadyHandled = new Set<string>();
+
+app.post("/webhooks/call-completed", async (request, reply) => {
+  const body = request.body as {
+    attempt_id?: string;
+    status?: string;
+    duration?: number | null;
+    interaction_id?: string | null;
+    failure_reason?: string | null;
+    final_agent_variables?: Record<string, unknown> | null;
+    webhook_config?: { metadata?: { secret?: string } | null };
+    interaction_transcript?: { role: string; en_text: string }[] | null;
+  };
+
+  if (env.WEBHOOK_SECRET && body.webhook_config?.metadata?.secret !== env.WEBHOOK_SECRET) {
+    return reply.code(401).send({ ok: false, error: "unauthorized" });
+  }
+
+  webhookLog({ attempt_id: body.attempt_id, status: body.status }, "[sarvam webhook] call completed");
+
+  const vars = (body.final_agent_variables ?? {}) as Record<string, string | undefined>;
+  const callerNumber = vars.caller_number;
+
+  recordEvent({
+    type: "call_ended",
+    caller_number: callerNumber ?? "",
+    session_id: body.interaction_id ?? body.attempt_id ?? "",
+    classification: vars.classification ?? "",
+    call_summary: vars.call_summary ?? "",
+    budget: vars.budget ?? "",
+    business_type: vars.business_type ?? "",
+    product_count: vars.product_count ?? "",
+    timeline: vars.timeline ?? "",
+    features: vars.features ?? "",
+    callback_requested: vars.callback_requested ?? "",
+    callback_time: vars.callback_time ?? "",
+    status: body.status ?? "",
+    duration: body.duration ?? null,
+    transcript: body.interaction_transcript ?? null,
+  });
+
+  if (!callerNumber) {
+    webhookLog(body, "call completed with no caller_number in final_agent_variables — cannot send follow-up");
+    return reply.send({ ok: true });
+  }
+
+  const dedupeKey = body.attempt_id ?? body.interaction_id ?? callerNumber;
+  if (callCompletedAlreadyHandled.has(dedupeKey)) {
+    return reply.send({ ok: true });
+  }
+  callCompletedAlreadyHandled.add(dedupeKey);
+
+  const outcome: CallOutcome = {
+    callerNumber,
+    classification: vars.classification as CallOutcome["classification"],
+    summary: vars.call_summary,
+    budget: vars.budget,
+    business: vars.business_type,
+    productCount: vars.product_count,
+    timeline: vars.timeline,
+    features: vars.features,
+    callbackRequested: vars.callback_requested === "true" || vars.callback_requested === "yes",
+    callbackTime: vars.callback_time,
+  };
+
+  void sendFollowUp(outcome, createDeepReasoningProvider(), webhookLog).catch((err) =>
+    webhookLog({ err }, "follow-up send failed (call-completed path)"),
+  );
+
+  return reply.send({ ok: true });
+});
+
 await app.listen({ port: env.PORT, host: "0.0.0.0" });
 app.log.info(`voice-server listening on :${env.PORT}`);

@@ -41,6 +41,17 @@ export async function placeCall({ to }: PlaceCallOptions) {
         user_config: {
           user_phone_number: to,
         },
+        ...(env.PUBLIC_BASE_URL
+          ? {
+              webhook_config: {
+                url: `${env.PUBLIC_BASE_URL}/webhooks/call-completed`,
+                // Echoed back verbatim in the webhook payload (per Sarvam's docs) —
+                // used as a lightweight authenticity check on the receiving end,
+                // since this endpoint isn't triggered by the agent's own tool auth.
+                metadata: env.WEBHOOK_SECRET ? { secret: env.WEBHOOK_SECRET } : undefined,
+              },
+            }
+          : {}),
       }),
     },
   );

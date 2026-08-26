@@ -64,6 +64,9 @@ const schema = z.object({
 
   PORT: z.coerce.number().default(8080),
   LOG_LEVEL: z.string().default("info"),
+
+  /** This server's own public URL, e.g. "https://15-207-88-161.sslip.io" — no trailing slash. Used to register webhook_config on outbound calls (telephony/sarvam.ts) so Sarvam's call-completion infra POSTs the result directly, sidestepping the on_end agent tool entirely (which never fired reliably in testing). Optional: if unset, calls are still placed, just without that webhook attached. */
+  PUBLIC_BASE_URL: z.string().optional(),
 });
 
 const parsed = schema.safeParse(process.env);
