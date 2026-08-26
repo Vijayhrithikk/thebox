@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import { Readable } from "node:stream";
 import { env } from "./config.js";
 import { assertProviderConfigured, createLiveProvider, createDeepReasoningProvider } from "./brain/providers/index.js";
 import { isTelephonyConfigured } from "./telephony/index.js";
@@ -6,7 +7,7 @@ import { initWhatsApp, sendWhatsApp } from "./actions/whatsapp.js";
 import { sendFollowUp, type CallOutcome } from "./actions/followup.js";
 import { scheduleCallbackFromSpeech } from "./brain/callbackScheduler.js";
 import { recordEvent, getEvents } from "./monitoring.js";
-import { createCampaign, listCampaigns, startCampaignDispatcher } from "./campaigns.js";
+import { createCampaign, listCampaigns, startCampaignDispatcher, recordCallOutcome } from "./campaigns.js";
 import { CONSOLE_HTML } from "./console.js";
 
 /**
@@ -91,6 +92,28 @@ app.post("/campaigns", async (request, reply) => {
   const campaign = createCampaign(body.label || "Untitled campaign", contacts);
   webhookLog({ campaignId: campaign.id, count: campaign.contacts.length }, "campaign created");
   return reply.send({ ok: true, campaign });
+});
+
+/**
+ * Proxies Sarvam's Analytics recordings endpoint — the console can't call
+ * it directly from the browser without exposing SARVAM_API_KEY client-side,
+ * so this fetches it server-side (with our key) and streams the audio back.
+ * interactionId comes in as a route param already URL-decoded by Fastify;
+ * re-encoded here for the outbound request since it contains "/" and ":".
+ */
+app.get("/recordings/:interactionId", async (request, reply) => {
+  if (!checkAdminAuth(request)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  const { interactionId } = request.params as { interactionId: string };
+  if (!env.SARVAM_ORG_ID || !env.SARVAM_WORKSPACE_ID || !env.SARVAM_APP_ID || !env.SARVAM_API_KEY) {
+    return reply.code(503).send({ ok: false, error: "Sarvam analytics not configured" });
+  }
+  const url = `https://apps.sarvam.ai/api/analytics/v1/${env.SARVAM_ORG_ID}/${env.SARVAM_WORKSPACE_ID}/${env.SARVAM_APP_ID}/recordings/${encodeURIComponent(interactionId)}`;
+  const upstream = await fetch(url, { headers: { "X-API-Key": env.SARVAM_API_KEY } });
+  if (!upstream.ok || !upstream.body) {
+    return reply.code(upstream.status || 502).send({ ok: false, error: "recording not available" });
+  }
+  reply.header("Content-Type", upstream.headers.get("content-type") ?? "audio/wav");
+  return reply.send(Readable.fromWeb(upstream.body as import("node:stream/web").ReadableStream));
 });
 
 // In-memory, per-process guard so a HOT verdict called more than once in the
@@ -245,6 +268,7 @@ app.post("/webhooks/call-completed", async (request, reply) => {
   }
 
   webhookLog({ attempt_id: body.attempt_id, status: body.status }, "[sarvam webhook] call completed");
+  recordCallOutcome(body.attempt_id, body.status);
 
   const vars = (body.final_agent_variables ?? {}) as Record<string, string | undefined>;
   const callerNumber = vars.caller_number;

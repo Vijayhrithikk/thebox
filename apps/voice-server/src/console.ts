@@ -93,7 +93,17 @@ export const CONSOLE_HTML = `<!doctype html>
   .cstatus.queued { background: var(--surface-2); color: var(--muted); }
   .cstatus.calling { background: var(--warm-soft); color: var(--warm); }
   .cstatus.placed { background: var(--accent-soft); color: var(--accent); }
+  .cstatus.connected { background: var(--accent-soft); color: var(--accent); }
   .cstatus.failed { background: var(--hot-soft); color: var(--hot); }
+  .cstatus.no_answer { background: var(--warm-soft); color: var(--warm); }
+  .transcript { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; max-height: 320px; overflow-y: auto; }
+  .turn { display: flex; gap: 8px; font-size: 12.5px; padding: 6px 10px; border-radius: 8px; }
+  .turn.agent { background: var(--accent-soft); }
+  .turn.user { background: var(--surface-2); }
+  .turn .role { text-transform: uppercase; font-size: 9.5px; font-weight: 700; color: var(--muted); min-width: 40px; flex-shrink: 0; padding-top: 1px; }
+  .turn .txt { flex: 1; }
+  .turn .en { display: block; font-size: 11px; color: var(--muted); margin-top: 2px; font-style: italic; }
+  .rec-status { margin-left: 8px; }
 </style>
 </head>
 <body>
@@ -141,29 +151,64 @@ function fmtTime(iso) {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " · " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 }
 
+/**
+ * Groups the flat event list into per-call cards. Not every tool sends a
+ * correlating id — note_discovery's body is just {slot, value}, no
+ * caller_number or session_id at all — so pure key-based bucketing splits
+ * a single real call into several cards (one per keyless discovery event).
+ * Instead: walk events oldest-first and attach each one to the most
+ * recently active call unless it's been quiet too long, already ended, or
+ * clearly belongs to a different caller — good enough for this system's
+ * one-line-at-a-time calling pattern, imperfect only if two calls are
+ * genuinely concurrent AND the second one's first event happens to be a
+ * keyless discovery call (rare, and undetectable without a real id).
+ */
 function groupByCall(events) {
-  const calls = new Map();
-  const order = [];
-  for (const e of events) {
-    const key = e.session_id || e.caller_number || ("unassigned:" + e.at);
-    if (!calls.has(key)) { calls.set(key, { key, caller: "", classification: "", evidence: "", slots: {}, callback: null, ended: null, firstAt: e.at, lastAt: e.at, raw: [] }); order.push(key); }
-    const c = calls.get(key);
-    c.raw.push(e);
-    if (e.at < c.firstAt) c.firstAt = e.at;
-    if (e.at > c.lastAt) c.lastAt = e.at;
-    if (e.caller_number && !c.caller) c.caller = e.caller_number;
-    if (e.type === "classify") { c.classification = e.classification || c.classification; c.evidence = e.evidence || c.evidence; }
-    if (e.type === "discovery" && e.slot) c.slots[e.slot] = e.value;
-    if (e.type === "callback") c.callback = e.spoken_time;
+  const chrono = [...events].sort((a, b) => (a.at < b.at ? -1 : 1));
+  const GAP_MS = 6 * 60 * 1000;
+  const calls = [];
+  let current = null;
+
+  for (const e of chrono) {
+    const key = e.session_id || e.caller_number || null;
+    const t = new Date(e.at).getTime();
+    let target = null;
+
+    if (current && !current.ended) {
+      const withinGap = t - new Date(current.lastAt).getTime() < GAP_MS;
+      const sameKey = key && current.key && key === current.key;
+      const conflictingCaller = e.caller_number && current.caller && e.caller_number !== current.caller;
+      const keylessOrUnkeyed = !key || !current.key;
+      if (withinGap && !conflictingCaller && (sameKey || keylessOrUnkeyed)) target = current;
+    }
+
+    if (!target) {
+      target = { key, caller: "", classification: "", evidence: "", slots: {}, callback: null, ended: null, firstAt: e.at, lastAt: e.at, raw: [], transcript: null, duration: null, status: "" };
+      calls.push(target);
+    }
+    current = target;
+
+    if (!target.key && key) target.key = key;
+    target.raw.push(e);
+    if (e.at < target.firstAt) target.firstAt = e.at;
+    if (e.at > target.lastAt) target.lastAt = e.at;
+    if (e.caller_number && !target.caller) target.caller = e.caller_number;
+    if (e.type === "classify") { target.classification = e.classification || target.classification; target.evidence = e.evidence || target.evidence; }
+    if (e.type === "discovery" && e.slot) target.slots[e.slot] = e.value;
+    if (e.type === "callback") target.callback = e.spoken_time;
     if (e.type === "call_ended") {
-      c.ended = e;
-      c.classification = e.classification || c.classification;
-      c.caller = e.caller_number || c.caller;
-      for (const k of ["budget", "business_type", "product_count", "timeline", "features"]) if (e[k]) c.slots[k] = e[k];
-      if (e.callback_time) c.callback = e.callback_time;
+      target.ended = e;
+      target.classification = e.classification || target.classification;
+      target.caller = e.caller_number || target.caller;
+      for (const k of ["budget", "business_type", "product_count", "timeline", "features"]) if (e[k]) target.slots[k] = e[k];
+      if (e.callback_time) target.callback = e.callback_time;
+      if (e.transcript) target.transcript = e.transcript;
+      if (typeof e.duration === "number") target.duration = e.duration;
+      if (e.status) target.status = e.status;
+      current = null;
     }
   }
-  return order.map((k) => calls.get(k)).sort((a, b) => (a.lastAt < b.lastAt ? 1 : -1));
+  return calls.sort((a, b) => (a.lastAt < b.lastAt ? 1 : -1));
 }
 
 function badge(cls) {
@@ -179,10 +224,26 @@ function renderCall(c) {
   const evidenceHtml = c.evidence ? '<div class="evidence"><span class="lbl">Evidence</span>' + c.evidence + '</div>' : "";
   const callbackHtml = c.callback ? '<div class="row"><span class="k">Callback</span>"' + c.callback + '"</div>' : "";
   const summaryHtml = c.ended && c.ended.call_summary ? '<div class="row"><span class="k">Summary</span>' + c.ended.call_summary + '</div>' : "";
-  const status = '<div class="status-line"><span class="dot ' + (c.ended ? "done" : "") + '"></span>' + (c.ended ? "call ended · follow-up webhook received" : "call in progress or still awaiting call-ended tool") + '</div>';
+  const durationTxt = typeof c.duration === "number" ? Math.round(c.duration) + "s" : "";
+  const statusTxt = c.ended
+    ? "call ended" + (c.status ? " · " + c.status : "") + (durationTxt ? " · " + durationTxt : "")
+    : "call in progress or awaiting completion webhook";
+  const status = '<div class="status-line"><span class="dot ' + (c.ended ? "done" : "") + '"></span>' + statusTxt + '</div>';
+
+  const recordingHtml = c.ended && c.key
+    ? '<div class="row"><button class="secondary play-recording" data-key="' + encodeURIComponent(c.key) + '">▶ Play recording</button><span class="rec-status hint"></span></div>'
+    : "";
+
+  const transcriptHtml = c.transcript && c.transcript.length
+    ? '<details><summary>transcript (' + c.transcript.length + ' turns)</summary><div class="transcript">' +
+      c.transcript.map((t) =>
+        '<div class="turn ' + t.role + '"><span class="role">' + t.role + '</span><span class="txt">' + (t.indic_text || t.en_text || "") + (t.indic_text && t.en_text ? '<span class="en">' + t.en_text + '</span>' : '') + '</span></div>'
+      ).join("") + '</div></details>'
+    : "";
+
   return '<div class="call">'
     + '<div class="call-head">' + badge(c.classification) + '<span class="caller">' + (c.caller || "unknown number") + '</span><span class="call-time">' + fmtTime(c.firstAt) + '</span></div>'
-    + '<div class="call-body">' + evidenceHtml + slotsHtml + callbackHtml + summaryHtml + status
+    + '<div class="call-body">' + evidenceHtml + slotsHtml + callbackHtml + summaryHtml + recordingHtml + status + transcriptHtml
     + '<details><summary>raw events (' + c.raw.length + ')</summary><pre>' + JSON.stringify(c.raw, null, 2).replace(/</g, "&lt;") + '</pre></details>'
     + '</div></div>';
 }
@@ -203,6 +264,7 @@ async function refresh() {
     ["calls", stats.calls], ["hot", stats.hot], ["warm", stats.warm], ["cold", stats.cold], ["callbacks", stats.callbacks],
   ].map(([l, n]) => '<div class="stat"><div class="n">' + n + '</div><div class="l">' + l + '</div></div>').join("");
 
+  if (audioPlaying) return; // don't blow away a playing <audio> element mid-refresh
   const feed = document.getElementById("feed");
   if (calls.length === 0) {
     feed.innerHTML = '<div class="empty">No calls yet — this fills in as Sarvam\\'s tools call the webhooks below.</div>';
@@ -210,8 +272,36 @@ async function refresh() {
   }
   feed.innerHTML = calls.map(renderCall).join("");
 }
+let audioPlaying = false;
 refresh();
 setInterval(refresh, 4000);
+
+document.getElementById("feed").addEventListener("click", async (e) => {
+  const btn = e.target.closest(".play-recording");
+  if (!btn) return;
+  const statusEl = btn.nextElementSibling;
+  const key = decodeURIComponent(btn.dataset.key);
+  btn.disabled = true;
+  statusEl.textContent = "loading…";
+  try {
+    const res = await fetch("/recordings/" + encodeURIComponent(key), { headers: { "X-Admin-Secret": adminSecret() } });
+    if (res.status === 401) { localStorage.removeItem("adminSecret"); throw new Error("wrong admin key"); }
+    if (!res.ok) throw new Error("not available yet");
+    const blob = await res.blob();
+    const audioEl = document.createElement("audio");
+    audioEl.controls = true;
+    audioEl.autoplay = true;
+    audioEl.src = URL.createObjectURL(blob);
+    audioPlaying = true;
+    audioEl.addEventListener("ended", () => { audioPlaying = false; });
+    audioEl.addEventListener("pause", () => { audioPlaying = false; });
+    btn.replaceWith(audioEl);
+    statusEl.textContent = "";
+  } catch (err) {
+    statusEl.textContent = err.message;
+    btn.disabled = false;
+  }
+});
 
 function adminSecret() {
   let s = localStorage.getItem("adminSecret");
@@ -301,7 +391,7 @@ document.getElementById("csvBtn").addEventListener("click", async () => {
 
 function renderCampaign(c) {
   const rows = c.contacts.map((ct) =>
-    '<div class="contact-row"><span class="cstatus ' + ct.status + '">' + ct.status + '</span><span class="num">' + ct.number + '</span><span class="nm">' + (ct.name || "") + (ct.error ? " — " + ct.error : "") + '</span></div>'
+    '<div class="contact-row"><span class="cstatus ' + ct.status + '">' + ct.status.replace("_", " ") + '</span><span class="num">' + ct.number + '</span><span class="nm">' + (ct.name || "") + (ct.attempts > 1 ? " · attempt " + ct.attempts + "/3" : "") + (ct.error ? " — " + ct.error : "") + '</span></div>'
   ).join("");
   return '<div class="campaign"><div class="campaign-head"><span class="lbl">' + c.label + '</span><span class="n">' + c.contacts.length + ' contact(s) · ' + fmtTime(c.createdAt) + '</span></div>' + rows + '</div>';
 }

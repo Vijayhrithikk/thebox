@@ -6,12 +6,16 @@ import { placeCall, isTelephonyConfigured } from "./telephony/index.js";
  * portal — a CSV upload or a single quick-dial both become a "campaign"
  * (a list of contacts to dial), processed sequentially by one dispatcher
  * loop below. In-memory only, same tradeoff as monitoring.ts: this doesn't
- * need to survive a restart to be useful for a demo. Per-call outcomes
- * (classification, discovery, follow-up) still come from the existing
- * webhook events — this module only owns "did we place the call."
+ * need to survive a restart to be useful for a demo.
+ *
+ * Retries: "placed" only means the API accepted the request — it says
+ * nothing about whether the person actually answered. recordCallOutcome()
+ * is fed by the /webhooks/call-completed route (which gets a real
+ * connected/no_answer/busy/failed status from Sarvam's call infra) and
+ * requeues no-answer/busy/failed contacts for another attempt, up to a cap.
  */
 
-export type ContactStatus = "queued" | "calling" | "placed" | "failed";
+export type ContactStatus = "queued" | "calling" | "placed" | "connected" | "no_answer" | "failed";
 
 export interface CampaignContact {
   id: string;
@@ -19,8 +23,11 @@ export interface CampaignContact {
   name?: string;
   status: ContactStatus;
   attemptId?: string;
+  attempts: number;
   error?: string;
   calledAt?: string;
+  /** Set when requeued after a no-answer/busy/failed outcome — the dispatcher won't pick this contact up again before this time, so retries don't hammer the number back-to-back. */
+  retryAfter?: string;
 }
 
 export interface Campaign {
@@ -32,6 +39,8 @@ export interface Campaign {
 
 const campaigns = new Map<string, Campaign>();
 const order: string[] = [];
+/** attempt_id -> which contact placed it, so the call-completed webhook (keyed by attempt_id) can update the right contact and decide whether to retry. */
+const attemptIndex = new Map<string, { campaignId: string; contactId: string }>();
 
 /** Loose E.164-ish normalization for CSV rows that dropped the country code — assumes India (+91) for bare 10-digit numbers, since that's this project's whole audience. Anything already starting with "+" is trusted as-is. */
 function normalizeNumber(raw: string): string {
@@ -47,7 +56,7 @@ export function createCampaign(label: string, rawContacts: { number: string; nam
   const contacts: CampaignContact[] = rawContacts
     .map((c) => ({ number: normalizeNumber(c.number), name: c.name?.trim() }))
     .filter((c) => c.number.length >= 8)
-    .map((c) => ({ id: randomUUID(), number: c.number, name: c.name, status: "queued" as const }));
+    .map((c) => ({ id: randomUUID(), number: c.number, name: c.name, status: "queued" as const, attempts: 0 }));
 
   const campaign: Campaign = { id: randomUUID(), createdAt: new Date().toISOString(), label, contacts };
   campaigns.set(campaign.id, campaign);
@@ -64,15 +73,51 @@ export function getCampaign(id: string): Campaign | undefined {
   return campaigns.get(id);
 }
 
-/** One rented number, one call at a time — overlapping outbound attempts would just collide on it. Fixed spacing between dials rather than waiting for the previous call to end, since call duration varies and we don't get a live "call finished" push from Sarvam mid-loop. */
+/**
+ * Called from the call-completed webhook once Sarvam reports what actually
+ * happened on a placed call. "connected" is terminal (success, whatever
+ * happens on the call from there is tracked via the classify/discovery
+ * webhooks). Anything else is a no-answer/busy/failed outcome, and gets
+ * requeued up to MAX_ATTEMPTS with a cooldown between tries.
+ */
+const MAX_ATTEMPTS = 3;
+const RETRY_DELAY_MS = 3 * 60_000;
+
+export function recordCallOutcome(attemptId: string | undefined, status: string | undefined): void {
+  if (!attemptId) return;
+  const ref = attemptIndex.get(attemptId);
+  if (!ref) return;
+  const contact = campaigns.get(ref.campaignId)?.contacts.find((c) => c.id === ref.contactId);
+  if (!contact) return;
+
+  if (status === "connected") {
+    contact.status = "connected";
+    return;
+  }
+
+  if (contact.attempts < MAX_ATTEMPTS) {
+    contact.status = "queued";
+    contact.retryAfter = new Date(Date.now() + RETRY_DELAY_MS).toISOString();
+  } else {
+    contact.status = "failed";
+    contact.error = `not answered after ${contact.attempts} attempt(s) — last status: ${status ?? "unknown"}`;
+  }
+}
+
+/** One rented number, one call at a time — overlapping outbound attempts would just collide on it. */
 const DIAL_SPACING_MS = 25_000;
 const IDLE_POLL_MS = 3_000;
 const UNCONFIGURED_RETRY_MS = 10_000;
 
-function findNextQueued(): CampaignContact | undefined {
+function findNextQueued(): { campaign: Campaign; contact: CampaignContact } | undefined {
+  const now = Date.now();
   for (const id of order) {
-    const contact = campaigns.get(id)?.contacts.find((c) => c.status === "queued");
-    if (contact) return contact;
+    const campaign = campaigns.get(id);
+    if (!campaign) continue;
+    const contact = campaign.contacts.find(
+      (c) => c.status === "queued" && (!c.retryAfter || new Date(c.retryAfter).getTime() <= now),
+    );
+    if (contact) return { campaign, contact };
   }
   return undefined;
 }
@@ -101,18 +146,29 @@ async function runLoop(log: (obj: unknown, msg: string) => void): Promise<void> 
       await sleep(IDLE_POLL_MS);
       continue;
     }
-    next.status = "calling";
+    const { campaign, contact } = next;
+    contact.status = "calling";
+    contact.attempts += 1;
+    contact.retryAfter = undefined;
     try {
-      const result = await placeCall({ to: next.number, sessionId: randomUUID() });
-      next.status = "placed";
-      next.attemptId = (result as { attempt_id?: string }).attempt_id;
-      next.calledAt = new Date().toISOString();
-      log({ number: next.number, attemptId: next.attemptId }, "campaign call placed");
+      const result = await placeCall({ to: contact.number, sessionId: randomUUID() });
+      const attemptId = (result as { attempt_id?: string }).attempt_id;
+      contact.status = "placed";
+      contact.attemptId = attemptId;
+      contact.calledAt = new Date().toISOString();
+      contact.error = undefined;
+      if (attemptId) attemptIndex.set(attemptId, { campaignId: campaign.id, contactId: contact.id });
+      log({ number: contact.number, attemptId, attempt: contact.attempts }, "campaign call placed");
     } catch (err) {
-      next.status = "failed";
-      next.error = err instanceof Error ? err.message : String(err);
-      next.calledAt = new Date().toISOString();
-      log({ number: next.number, err }, "campaign call failed");
+      contact.error = err instanceof Error ? err.message : String(err);
+      contact.calledAt = new Date().toISOString();
+      if (contact.attempts < MAX_ATTEMPTS) {
+        contact.status = "queued";
+        contact.retryAfter = new Date(Date.now() + RETRY_DELAY_MS).toISOString();
+      } else {
+        contact.status = "failed";
+      }
+      log({ number: contact.number, err, attempt: contact.attempts }, "campaign call failed to place");
     }
     await sleep(DIAL_SPACING_MS);
   }
