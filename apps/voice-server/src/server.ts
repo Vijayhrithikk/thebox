@@ -6,6 +6,7 @@ import { initWhatsApp, sendWhatsApp } from "./actions/whatsapp.js";
 import { sendFollowUp, type CallOutcome } from "./actions/followup.js";
 import { scheduleCallbackFromSpeech } from "./brain/callbackScheduler.js";
 import { recordEvent, getEvents } from "./monitoring.js";
+import { createCampaign, listCampaigns, startCampaignDispatcher } from "./campaigns.js";
 import { CONSOLE_HTML } from "./console.js";
 
 /**
@@ -21,7 +22,7 @@ import { CONSOLE_HTML } from "./console.js";
 assertProviderConfigured();
 if (!isTelephonyConfigured()) {
   console.warn(
-    "EXOTEL_* not configured — the scheduled-callback re-dial is disabled; request_callback will still resolve and log the requested time, it just won't place the call itself.",
+    "SARVAM_* not configured — the scheduled-callback re-dial is disabled; request_callback will still resolve and log the requested time, it just won't place the call itself.",
   );
 }
 
@@ -61,6 +62,36 @@ function checkWebhookAuth(request: { headers: Record<string, unknown> }): boolea
   if (!env.WEBHOOK_SECRET) return true;
   return request.headers["x-webhook-secret"] === env.WEBHOOK_SECRET;
 }
+
+/**
+ * The campaign routes below place real calls against a real Sarvam number
+ * for any number they're pointed at — unlike /events (read-only), an open
+ * "call any number" endpoint is a real abuse vector even for a demo.
+ * Reuses WEBHOOK_SECRET as the shared admin key rather than introducing a
+ * second secret to configure and document; the console prompts for it once
+ * and keeps it in localStorage.
+ */
+function checkAdminAuth(request: { headers: Record<string, unknown> }): boolean {
+  if (!env.WEBHOOK_SECRET) return true;
+  return request.headers["x-admin-secret"] === env.WEBHOOK_SECRET;
+}
+
+startCampaignDispatcher((obj, msg) => app.log.info(obj as object, msg));
+
+// Read-only, same posture as /events — the thing that actually needs
+// protecting is triggering a call (POST below), not viewing status.
+app.get("/campaigns", async () => ({ campaigns: listCampaigns() }));
+
+app.post("/campaigns", async (request, reply) => {
+  if (!checkAdminAuth(request)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  const body = request.body as { label?: string; contacts?: { number?: string; name?: string }[] };
+  const contacts = (body.contacts ?? []).filter((c): c is { number: string; name?: string } => Boolean(c.number));
+  if (contacts.length === 0) return reply.code(400).send({ ok: false, error: "no valid contacts" });
+
+  const campaign = createCampaign(body.label || "Untitled campaign", contacts);
+  webhookLog({ campaignId: campaign.id, count: campaign.contacts.length }, "campaign created");
+  return reply.send({ ok: true, campaign });
+});
 
 // In-memory, per-process guard so a HOT verdict called more than once in the
 // same conversation (Sarvam's agent can call the tool again as confidence

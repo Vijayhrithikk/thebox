@@ -25,7 +25,7 @@ if (to === env.PROSPECT_PHONE && !wantsProspect) {
 }
 
 const sessionId = randomUUID();
-console.log(`Dialling ${to} via Exotel  (session ${sessionId})`);
+console.log(`Dialling ${to} via Sarvam Instant Outbound  (session ${sessionId})`);
 
 const call = await placeCall({ to, sessionId });
 console.log("Call queued:", call);

@@ -8,18 +8,25 @@ repo's backend (the webhook/WhatsApp/scheduler action layer Sarvam's tools call 
 Everything — agent creation, voice, pronunciation dictionary, instructions, all four tools
 — is in one place: **`docs/sarvam-agent-full-build.md`**. Follow it top to bottom.
 
-Telephony: the agent's Exotel connection previously hit a real bug (Sarvam's campaign
-dialer landing on Exotel's two-leg bridging mode instead of single-leg dialing, dropping
-calls at ~7 seconds) — the number moved to one rented directly through Sarvam, which
-sidesteps it. See `PROGRESS.md`'s "STATUS AS OF" banner for the full history.
+Telephony: an earlier Exotel connection hit a real bug (Sarvam's campaign dialer landing on
+Exotel's two-leg bridging mode instead of single-leg dialing, dropping calls at ~7 seconds).
+The number moved to one rented directly through Sarvam, and telephony now goes entirely
+through Sarvam's Instant Outbound API (`telephony/sarvam.ts`) — both the initial call and the
+scheduled-callback re-dial. See `PROGRESS.md`'s "STATUS AS OF" banner for the full history.
 
 ## 2. This repo's backend (`apps/voice-server`)
 
 Copy `.env.example` to `.env` in the repo root and fill in:
 
-- `EXOTEL_*` — **optional now.** Only used for the scheduled-callback re-dial. Leave blank
-  if you're not running Exotel at all; the server logs a warning at boot and callbacks still
-  resolve and get logged, they just don't auto-redial.
+- `SARVAM_*` (`SARVAM_API_KEY`, `SARVAM_ORG_ID`, `SARVAM_WORKSPACE_ID`, `SARVAM_APP_ID`,
+  `SARVAM_APP_VERSION`, `SARVAM_CONNECTION_ID`, `SARVAM_AGENT_PHONE_NUMBER`) — used to place
+  calls via Sarvam's Instant Outbound API: both `pnpm call` and the scheduled-callback
+  re-dial. `SARVAM_API_KEY` must be the Voice-Agents-specific key (`sk_samvaad_...` prefix,
+  from inside the Voice Agents portal) — the general dashboard TTS/STT key won't work here.
+  **`SARVAM_APP_VERSION` needs bumping every time you save a change in the agent builder** —
+  it's pinned to a specific version, not "latest," so a stale value here silently calls an
+  old agent config. Leave these blank if you're not testing telephony at all; the server logs
+  a warning at boot and callbacks still resolve and get logged, they just don't auto-redial.
 - `DEEPSEEK_API_KEY` — required. Used only for two things: resolving spoken callback times
   ("tomorrow morning") into real datetimes, and composing the post-call WhatsApp follow-up.
   Neither is on the call's critical path, so DeepSeek's flagship reasoning mode is fine here

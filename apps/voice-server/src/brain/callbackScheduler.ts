@@ -12,16 +12,14 @@ import { placeCall, isTelephonyConfigured } from "../telephony/index.js";
  * Postgres before this survives a restart or scales past one process, which
  * is exactly what DATABASE_URL is reserved for.
  *
- * The re-dial itself goes through Exotel's API (placeCall below), not
- * Sarvam — Sarvam's outbound calling is portal/campaign-driven with no
- * confirmed API for placing one ad-hoc call. That path is now optional,
- * not required: the number moved from an Exotel-connected ExoPhone to a
- * Sarvam-rented number (Exotel's "connect two numbers" bridging mode hit a
- * real bug in Sarvam's campaign dialer — see PROGRESS.md), so a live
- * install may have no Exotel credentials at all. When that's the case,
- * time resolution and logging below still happen — only the automatic
- * re-dial itself is skipped, with a clear log line saying so, rather than
- * either crashing at boot or silently doing nothing.
+ * The re-dial itself goes through Sarvam's Instant Outbound API (placeCall
+ * below, telephony/sarvam.ts) — the same mechanism used to place the
+ * original call, straight to the same agent. SARVAM_* env vars are
+ * optional, not required: if unset (e.g. a dev box with no telephony
+ * credentials at all), time resolution and logging below still happen —
+ * only the automatic re-dial itself is skipped, with a clear log line
+ * saying so, rather than either crashing at boot or silently doing
+ * nothing.
  */
 export interface ScheduledCallback {
   to: string;

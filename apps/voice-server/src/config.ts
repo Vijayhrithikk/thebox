@@ -23,22 +23,26 @@ for (const key of Object.keys(process.env)) {
  * agent took over the entire live call. See PROGRESS.md for that history;
  * it's not lost, just not live.
  *
- * Exotel is now fully optional, not removed outright — it was the
- * telephony this server used only for the scheduled-callback re-dial, and
- * the number since moved to a Sarvam-rented number (Sarvam's own dialing
- * exposed no confirmed single-call API to switch the re-dial to). If these
- * are unset, callbackScheduler.ts still resolves and records the
- * requested time, it just can't place the re-dial itself — see its
- * comment for exactly what degrades.
+ * Exotel was tried first for the scheduled-callback re-dial, hit a real
+ * bug in Sarvam's campaign dialer (bridging mode instead of single-leg),
+ * and was dropped once the number moved to one rented directly through
+ * Sarvam. Telephony now goes entirely through Sarvam's Instant Outbound
+ * API (telephony/sarvam.ts) — both the initial call and the re-dial place
+ * calls the same way, straight to the same agent, with caller_number set
+ * explicitly as an agent_variable rather than relying on an ambiguous
+ * built-in. These fields are optional so callbackScheduler.ts still
+ * resolves and records a requested callback time even if unset — it just
+ * can't place the re-dial itself; see its comment for what degrades.
  */
 const schema = z.object({
-  EXOTEL_SID: z.string().optional(),
-  EXOTEL_API_KEY: z.string().min(5).optional(),
-  EXOTEL_API_TOKEN: z.string().min(5).optional(),
-  /** The ExoPhone number, domestic format (e.g. "08047280713") — Exotel doesn't use E.164 here. */
-  EXOTEL_EXOPHONE: z.string().optional(),
-  /** App Bazaar flow ID — its Voicebot Applet now points at Sarvam, not at this server, so dialing through it (re-dials included) reaches the same Sarvam agent as the original call. */
-  EXOTEL_APP_ID: z.string().optional(),
+  SARVAM_API_KEY: z.string().min(5).optional(),
+  SARVAM_ORG_ID: z.string().optional(),
+  SARVAM_WORKSPACE_ID: z.string().optional(),
+  SARVAM_APP_ID: z.string().optional(),
+  SARVAM_APP_VERSION: z.coerce.number().optional(),
+  SARVAM_CONNECTION_ID: z.string().optional(),
+  /** The Sarvam-rented number the agent calls out from, e.g. "+918071579499". */
+  SARVAM_AGENT_PHONE_NUMBER: z.string().optional(),
 
   DEEPSEEK_API_KEY: z.string().min(5),
   /** deepseek-chat / deepseek-reasoner retired 2026-07-24 — this is the current flagship. Only used for the low-volume callback-time resolution call. */
