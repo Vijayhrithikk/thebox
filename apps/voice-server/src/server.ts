@@ -7,7 +7,7 @@ import { initWhatsApp, sendWhatsApp } from "./actions/whatsapp.js";
 import { sendFollowUp, type CallOutcome } from "./actions/followup.js";
 import { scheduleCallbackFromSpeech } from "./brain/callbackScheduler.js";
 import { recordEvent, getEvents } from "./monitoring.js";
-import { createCampaign, listCampaigns, startCampaignDispatcher, recordCallOutcome } from "./campaigns.js";
+import { createCampaign, listCampaigns, startCampaignDispatcher, recordCallOutcome, getRetryConfig, setRetryConfig } from "./campaigns.js";
 import { CONSOLE_HTML } from "./console.js";
 
 /**
@@ -31,9 +31,34 @@ const app = Fastify({
   logger: { level: env.LOG_LEVEL, transport: { target: "pino-pretty" } },
 });
 
+/**
+ * The console and its read endpoints are otherwise reachable by anyone who
+ * finds the URL — real conversation content (phone numbers, transcripts,
+ * discovery answers) with no protection at all. HTTP Basic Auth via the
+ * browser's native prompt, rather than a custom login page, since the only
+ * consumer is a human opening this in a browser. /health stays open (used
+ * for infra checks), as do the Sarvam-facing /webhooks/* routes (those have
+ * their own X-Webhook-Secret auth already).
+ */
+function checkConsoleAuth(request: { headers: Record<string, unknown> }): boolean {
+  if (!env.CONSOLE_PASSWORD) return true;
+  const header = request.headers["authorization"];
+  if (typeof header !== "string" || !header.startsWith("Basic ")) return false;
+  const [user, pass] = Buffer.from(header.slice(6), "base64").toString("utf8").split(":");
+  return user === env.CONSOLE_USERNAME && pass === env.CONSOLE_PASSWORD;
+}
+
+function requireConsoleAuth(request: { headers: Record<string, unknown> }, reply: { header: (k: string, v: string) => unknown; code: (n: number) => { send: (b: unknown) => unknown } }): boolean {
+  if (checkConsoleAuth(request)) return true;
+  reply.header("WWW-Authenticate", 'Basic realm="ElevateBox Console"');
+  reply.code(401).send("Authentication required");
+  return false;
+}
+
 app.get("/health", async () => ({ ok: true, at: new Date().toISOString() }));
 
-app.get("/", async (_request, reply) => {
+app.get("/", async (request, reply) => {
+  if (!requireConsoleAuth(request, reply)) return;
   reply.type("text/html").send(CONSOLE_HTML);
 });
 
@@ -46,7 +71,10 @@ void initWhatsApp((obj, msg) => app.log.info(obj as object, msg));
 const webhookLog = (obj: unknown, msg: string) => app.log.info(obj as object, msg);
 
 /** For the console: recent events across all calls, newest first. */
-app.get("/events", async () => ({ events: getEvents() }));
+app.get("/events", async (request, reply) => {
+  if (!requireConsoleAuth(request, reply)) return;
+  return { events: getEvents() };
+});
 
 /**
  * These four routes trigger real side effects (WhatsApp sends, a scheduled
@@ -79,9 +107,27 @@ function checkAdminAuth(request: { headers: Record<string, unknown> }): boolean 
 
 startCampaignDispatcher((obj, msg) => app.log.info(obj as object, msg));
 
-// Read-only, same posture as /events — the thing that actually needs
-// protecting is triggering a call (POST below), not viewing status.
-app.get("/campaigns", async () => ({ campaigns: listCampaigns() }));
+// Read-only, but still gated by console auth now (previously open to
+// anyone, same as /events was before CONSOLE_PASSWORD existed).
+app.get("/campaigns", async (request, reply) => {
+  if (!requireConsoleAuth(request, reply)) return;
+  return { campaigns: listCampaigns() };
+});
+
+app.get("/campaigns/retry-config", async (request, reply) => {
+  if (!requireConsoleAuth(request, reply)) return;
+  return getRetryConfig();
+});
+
+app.post("/campaigns/retry-config", async (request, reply) => {
+  if (!checkAdminAuth(request)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  const body = request.body as { maxAttempts?: number; retryDelayMinutes?: number };
+  if (typeof body.maxAttempts !== "number" || typeof body.retryDelayMinutes !== "number") {
+    return reply.code(400).send({ ok: false, error: "maxAttempts and retryDelayMinutes (numbers) required" });
+  }
+  setRetryConfig(body.maxAttempts, body.retryDelayMinutes);
+  return reply.send({ ok: true, config: getRetryConfig() });
+});
 
 app.post("/campaigns", async (request, reply) => {
   if (!checkAdminAuth(request)) return reply.code(401).send({ ok: false, error: "unauthorized" });
@@ -102,6 +148,7 @@ app.post("/campaigns", async (request, reply) => {
  * re-encoded here for the outbound request since it contains "/" and ":".
  */
 app.get("/recordings/:interactionId", async (request, reply) => {
+  if (!requireConsoleAuth(request, reply)) return;
   if (!checkAdminAuth(request)) return reply.code(401).send({ ok: false, error: "unauthorized" });
   const { interactionId } = request.params as { interactionId: string };
   if (!env.SARVAM_ORG_ID || !env.SARVAM_WORKSPACE_ID || !env.SARVAM_APP_ID || !env.SARVAM_API_KEY) {

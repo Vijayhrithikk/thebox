@@ -80,8 +80,17 @@ export function getCampaign(id: string): Campaign | undefined {
  * webhooks). Anything else is a no-answer/busy/failed outcome, and gets
  * requeued up to MAX_ATTEMPTS with a cooldown between tries.
  */
-const MAX_ATTEMPTS = 3;
-const RETRY_DELAY_MS = 3 * 60_000;
+let maxAttempts = 3;
+let retryDelayMs = 3 * 60_000;
+
+export function getRetryConfig(): { maxAttempts: number; retryDelayMinutes: number } {
+  return { maxAttempts, retryDelayMinutes: retryDelayMs / 60_000 };
+}
+
+export function setRetryConfig(nextMaxAttempts: number, retryDelayMinutes: number): void {
+  maxAttempts = Math.min(10, Math.max(1, Math.round(nextMaxAttempts)));
+  retryDelayMs = Math.min(60, Math.max(0.5, retryDelayMinutes)) * 60_000;
+}
 
 export function recordCallOutcome(attemptId: string | undefined, status: string | undefined): void {
   if (!attemptId) return;
@@ -95,9 +104,9 @@ export function recordCallOutcome(attemptId: string | undefined, status: string 
     return;
   }
 
-  if (contact.attempts < MAX_ATTEMPTS) {
+  if (contact.attempts < maxAttempts) {
     contact.status = "queued";
-    contact.retryAfter = new Date(Date.now() + RETRY_DELAY_MS).toISOString();
+    contact.retryAfter = new Date(Date.now() + retryDelayMs).toISOString();
   } else {
     contact.status = "failed";
     contact.error = `not answered after ${contact.attempts} attempt(s) — last status: ${status ?? "unknown"}`;
@@ -162,9 +171,9 @@ async function runLoop(log: (obj: unknown, msg: string) => void): Promise<void> 
     } catch (err) {
       contact.error = err instanceof Error ? err.message : String(err);
       contact.calledAt = new Date().toISOString();
-      if (contact.attempts < MAX_ATTEMPTS) {
+      if (contact.attempts < maxAttempts) {
         contact.status = "queued";
-        contact.retryAfter = new Date(Date.now() + RETRY_DELAY_MS).toISOString();
+        contact.retryAfter = new Date(Date.now() + retryDelayMs).toISOString();
       } else {
         contact.status = "failed";
       }

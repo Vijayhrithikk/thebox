@@ -104,6 +104,9 @@ export const CONSOLE_HTML = `<!doctype html>
   .turn .txt { flex: 1; }
   .turn .en { display: block; font-size: 11px; color: var(--muted); margin-top: 2px; font-style: italic; }
   .rec-status { margin-left: 8px; }
+  .retry-settings { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; font-size: 12.5px; }
+  .retry-settings input[type=text] { width: 42px; text-align: center; padding: 6px 4px; }
+  #retryMsg { font-size: 12px; color: var(--accent); }
 </style>
 </head>
 <body>
@@ -137,10 +140,19 @@ export const CONSOLE_HTML = `<!doctype html>
 
   <div class="panel">
     <h2>Campaigns</h2>
+    <div class="retry-settings">
+      <span class="hint">Retry unanswered calls:</span>
+      <input type="text" id="retryMax" size="2" />
+      <span class="hint">attempts, every</span>
+      <input type="text" id="retryDelay" size="3" />
+      <span class="hint">min apart</span>
+      <button id="retrySaveBtn" class="secondary">Save</button>
+      <span id="retryMsg"></span>
+    </div>
     <div id="campaignFeed"><div class="hint">No campaigns yet.</div></div>
   </div>
 
-  <div class="note">Call audio and full transcripts live in Sarvam's own portal, not here — the feed below only shows what our four webhooks captured (discovery answers, classification, callback requests, end-of-call summary).</div>
+  <div class="note">Transcripts and recordings below come straight from Sarvam's call-completion webhook — the feed only shows what our webhooks captured (discovery answers, classification, callback requests, end-of-call summary + transcript + audio).</div>
   <div id="feed"><div class="empty">Loading…</div></div>
 </main>
 <script>
@@ -170,25 +182,33 @@ function groupByCall(events) {
   let current = null;
 
   for (const e of chrono) {
-    const key = e.session_id || e.caller_number || null;
     const t = new Date(e.at).getTime();
     let target = null;
 
     if (current && !current.ended) {
       const withinGap = t - new Date(current.lastAt).getTime() < GAP_MS;
-      const sameKey = key && current.key && key === current.key;
-      const conflictingCaller = e.caller_number && current.caller && e.caller_number !== current.caller;
-      const keylessOrUnkeyed = !key || !current.key;
-      if (withinGap && !conflictingCaller && (sameKey || keylessOrUnkeyed)) target = current;
+      // caller_number and session_id are two independent correlators —
+      // different tools populate different ones (note_discovery/request_callback
+      // send caller_number but no session_id; call_ended sends both, and its
+      // session_id is a different-looking id than either). A match on EITHER
+      // one means "same call"; a mismatch on one that's actually set on both
+      // sides means "different call," even if the other correlator is blank.
+      const sameCaller = e.caller_number && current.caller && e.caller_number === current.caller;
+      const sameSession = e.session_id && current.sessionId && e.session_id === current.sessionId;
+      const conflicting =
+        (e.caller_number && current.caller && e.caller_number !== current.caller) ||
+        (e.session_id && current.sessionId && e.session_id !== current.sessionId);
+      const noCorrelatorYet = (!e.caller_number && !e.session_id) || (!current.caller && !current.sessionId);
+      if (withinGap && !conflicting && (sameCaller || sameSession || noCorrelatorYet)) target = current;
     }
 
     if (!target) {
-      target = { key, caller: "", classification: "", evidence: "", slots: {}, callback: null, ended: null, firstAt: e.at, lastAt: e.at, raw: [], transcript: null, duration: null, status: "" };
+      target = { sessionId: null, caller: "", classification: "", evidence: "", slots: {}, callback: null, ended: null, firstAt: e.at, lastAt: e.at, raw: [], transcript: null, duration: null, status: "" };
       calls.push(target);
     }
     current = target;
 
-    if (!target.key && key) target.key = key;
+    if (!target.sessionId && e.session_id) target.sessionId = e.session_id;
     target.raw.push(e);
     if (e.at < target.firstAt) target.firstAt = e.at;
     if (e.at > target.lastAt) target.lastAt = e.at;
@@ -230,8 +250,8 @@ function renderCall(c) {
     : "call in progress or awaiting completion webhook";
   const status = '<div class="status-line"><span class="dot ' + (c.ended ? "done" : "") + '"></span>' + statusTxt + '</div>';
 
-  const recordingHtml = c.ended && c.key
-    ? '<div class="row"><button class="secondary play-recording" data-key="' + encodeURIComponent(c.key) + '">▶ Play recording</button><span class="rec-status hint"></span></div>'
+  const recordingHtml = c.ended && c.sessionId
+    ? '<div class="row"><button class="secondary play-recording" data-key="' + encodeURIComponent(c.sessionId) + '">▶ Play recording</button><span class="rec-status hint"></span></div>'
     : "";
 
   const transcriptHtml = c.transcript && c.transcript.length
@@ -389,9 +409,11 @@ document.getElementById("csvBtn").addEventListener("click", async () => {
   }
 });
 
+let retryMaxAttempts = 3;
+
 function renderCampaign(c) {
   const rows = c.contacts.map((ct) =>
-    '<div class="contact-row"><span class="cstatus ' + ct.status + '">' + ct.status.replace("_", " ") + '</span><span class="num">' + ct.number + '</span><span class="nm">' + (ct.name || "") + (ct.attempts > 1 ? " · attempt " + ct.attempts + "/3" : "") + (ct.error ? " — " + ct.error : "") + '</span></div>'
+    '<div class="contact-row"><span class="cstatus ' + ct.status + '">' + ct.status.replace("_", " ") + '</span><span class="num">' + ct.number + '</span><span class="nm">' + (ct.name || "") + (ct.attempts > 1 ? " · attempt " + ct.attempts + "/" + retryMaxAttempts : "") + (ct.error ? " — " + ct.error : "") + '</span></div>'
   ).join("");
   return '<div class="campaign"><div class="campaign-head"><span class="lbl">' + c.label + '</span><span class="n">' + c.contacts.length + ' contact(s) · ' + fmtTime(c.createdAt) + '</span></div>' + rows + '</div>';
 }
@@ -405,6 +427,31 @@ async function refreshCampaigns() {
 }
 refreshCampaigns();
 setInterval(refreshCampaigns, 5000);
+
+async function loadRetryConfig() {
+  const res = await fetch("/campaigns/retry-config");
+  if (!res.ok) return;
+  const cfg = await res.json();
+  retryMaxAttempts = cfg.maxAttempts;
+  document.getElementById("retryMax").value = cfg.maxAttempts;
+  document.getElementById("retryDelay").value = cfg.retryDelayMinutes;
+}
+loadRetryConfig();
+
+document.getElementById("retrySaveBtn").addEventListener("click", async () => {
+  const msgEl = document.getElementById("retryMsg");
+  const maxAttempts = Number(document.getElementById("retryMax").value);
+  const retryDelayMinutes = Number(document.getElementById("retryDelay").value);
+  if (!maxAttempts || !retryDelayMinutes) { msgEl.textContent = "enter valid numbers"; return; }
+  try {
+    const data = await postJSON("/campaigns/retry-config", { maxAttempts, retryDelayMinutes });
+    retryMaxAttempts = data.config.maxAttempts;
+    msgEl.textContent = "saved";
+    setTimeout(() => { msgEl.textContent = ""; }, 2000);
+  } catch (err) {
+    msgEl.textContent = err.message;
+  }
+});
 </script>
 </body>
 </html>`;
